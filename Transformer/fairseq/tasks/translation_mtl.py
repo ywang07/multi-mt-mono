@@ -17,9 +17,9 @@ from fairseq.data import (
     Dictionary,
     ConcatDataset,
     data_utils,
-    LanguagePairLangidDataset,
     indexed_dataset,
 )
+from fairseq.data.language_pair_langid_dataset import LanguagePairLangidDataset
 from . import FairseqTask, register_task
 
 
@@ -231,7 +231,9 @@ class TranslationMtlTask(FairseqTask):
         tgt_langs = [self.args.target_lang] * len(src_lengths)
         return LanguagePairLangidDataset(
             src_tokens, src_lengths, self.source_dictionary,
-            src_langs, tgt_langs=tgt_langs
+            src_langs, tgt_langs=tgt_langs,
+            encoder_langtok=self.args.encoder_langtok,
+            decoder_langtok=self.args.decoder_langtok
         )
 
     def train_step(self, sample, model, criterion, optimizer, ignore_grad=False):
@@ -269,6 +271,7 @@ class TranslationMtlTask(FairseqTask):
             print(self.src_dict.string(s))
         print("[debug]==========================")
         """
+        
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0

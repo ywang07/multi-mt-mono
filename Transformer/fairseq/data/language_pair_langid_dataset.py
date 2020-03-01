@@ -114,7 +114,7 @@ class LanguagePairLangidDataset(FairseqDataset):
         left_pad_source=True, left_pad_target=False,
         max_source_positions=1024, max_target_positions=1024,
         shuffle=True, input_feeding=True, remove_eos_from_source=False, append_eos_to_target=False,
-        encoder_langtok=None, decoder_langtok=False
+        encoder_langtok='tgt', decoder_langtok=False
     ):
         if tgt_dict is not None:
             assert src_dict.pad() == tgt_dict.pad()
@@ -181,6 +181,14 @@ class LanguagePairLangidDataset(FairseqDataset):
         if self.decoder_langtok:
             new_eos = self.get_decoder_langtok(tgt_lang)
             tgt_item = torch.cat([torch.LongTensor([new_eos]), tgt_item[index]])
+
+        """
+        print("[debug]==========================")
+        print("encoder_langtok: {}".format(self.encoder_langtok))
+        print("{}-src: {}".format(index, self.src_dict.string(src_item)))
+        print("{}-tgt: {}".format(index, self.src_dict.string(tgt_item) if tgt_item is not None else "None"))
+        print("[debug]==========================")
+        """
 
         return {
             'id': index,
