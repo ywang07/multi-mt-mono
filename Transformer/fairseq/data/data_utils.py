@@ -96,6 +96,11 @@ def filter_by_size(indices, size_fn, max_positions, raise_exception=False):
             idx_size = size_fn(idx)
             assert isinstance(idx_size, dict)
             intersect_keys = set(max_positions.keys()) & set(idx_size.keys())
+
+            for key in intersect_keys:
+                if not isinstance(idx_size[key], tuple):
+                    idx_size[key] = (idx_size[key], )
+
             return all(
                 all(a is None or b is None or a <= b
                     for a, b in zip(idx_size[key], max_positions[key]))
