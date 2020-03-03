@@ -143,15 +143,18 @@ class TranslationMtlMultitaskTask(FairseqTask):
                             help='replace beginning-of-sentence in target sentence with target language token')
         parser.add_argument('--tokens-per-sample', default=512, type=int,
                             help='max number of total tokens over all segments per sample for BERT dataset')
+        parser.add_argument('--multitask-mlm', action='store_true',
+                            help='use MaskedLM objective together with MT cross-entropy')
+        parser.add_argument('--multitask-dae', action='store_true',
+                            help='use DAE objective together with MT cross-entropy')
         parser.add_argument('--masking-ratio', default=0.15, type=int,
                             help='masking ratio for MaskedLM')
-
+        
     def __init__(self, args, src_dict, tgt_dict, training):
         super().__init__(args)
         self.src_dict = src_dict
         self.tgt_dict = tgt_dict
         self.lang_pairs = args.lang_pairs
-        self.langs_mlm = sorted(list(set(args.lang_mlm.split(","))))
         # eval_lang_pairs for multilingual translation is usually all of the
         # lang_pairs. However for other multitask settings or when we want to
         # optimize for certain languages we want to use a different subset. Thus
@@ -165,6 +168,8 @@ class TranslationMtlMultitaskTask(FairseqTask):
         self.langs = sorted(list({x for lang_pair in args.lang_pairs for x in lang_pair.split('-')}))
         self.training = training
         self.criterions = {}
+        self.langs_mlm = sorted(list(set(args.lang_mlm.split(",")))) if args.lang_mlm is not None else []
+        self.multitask_mlm = args.multitask_mlm
 
     @classmethod
     def setup_task(cls, args, **kwargs):
@@ -181,11 +186,16 @@ class TranslationMtlMultitaskTask(FairseqTask):
         elif getattr(args, 'lazy_load', False):
             utils.deprecation_warning('--lazy-load is deprecated, please use --dataset-impl=lazy')
             args.dataset_impl = 'lazy'
-
         if args.lang_pairs is None:
             raise ValueError('--lang-pairs is required. List all the language pairs in the training objective.')
         args.lang_pairs = args.lang_pairs.split(',')
+        if args.multitask_mlm and args.lang_mlm is None:
+            raise ValueError('--lang-mlm is required for mlm objective. List all the language with monolingual data.')
+        
         sorted_langs = sorted(list({x for lang_pair in args.lang_pairs for x in lang_pair.split('-')}))
+        if args.lang_mlm is not None:
+            sorted_langs = sorted(list(set(sorted_langs + args.lang_mlm.split(","))))
+        
         if args.source_lang is not None or args.target_lang is not None:
             training = False
             args.lang_pairs = ['{}-{}'.format(args.source_lang, args.target_lang)]
@@ -226,9 +236,10 @@ class TranslationMtlMultitaskTask(FairseqTask):
         from fairseq import criterions
         criterion = criterions.build_criterion(args, self)
         self.criterions['seq2seq'] = criterion
-        self.criterions['mlm'] = MlmLoss(args, self)
         print('| criterion (seq2seq) {}'.format(self.criterions['seq2seq'].__class__.__name__))
-        print('| criterion (mlm)     {}'.format(self.criterions['mlm'].__class__.__name__))
+        if self.multitask_mlm:
+            self.criterions['mlm'] = MlmLoss(args, self)
+            print('| criterion (mlm)     {}'.format(self.criterions['mlm'].__class__.__name__))
         return criterion
 
     def load_dataset(self, split, epoch=0, combine=False, **kwargs):
@@ -252,31 +263,37 @@ class TranslationMtlMultitaskTask(FairseqTask):
             encoder_langtok=self.args.encoder_langtok,
             decoder_langtok=self.args.decoder_langtok
         )
-        
+        all_datasets = [("seq2seq", dataset_mt)]
+
         # mono data for mlm
-        paths_mono = self.args.data_mono.split(':') if self.args.data_mono is not None else paths
-        assert len(paths_mono) > 0
-        data_mono_path = paths_mono[epoch % len(paths_mono)]
-        dataset_mono = load_mlm_dataset(
-            data_mono_path, split, self.langs_mlm, self.src_dict,
-            combine=combine, dataset_impl=self.args.dataset_impl,
-            tokens_per_sample=self.args.tokens_per_sample,
-            masking_ratio=self.args.masking_ratio
-        )
+        if self.multitask_mlm:
+            paths_mono = self.args.data_mono.split(':') if self.args.data_mono is not None else paths
+            assert len(paths_mono) > 0
+            data_mono_path = paths_mono[epoch % len(paths_mono)]
+            dataset_mono = load_mlm_dataset(
+                data_mono_path, split, self.langs_mlm, self.src_dict,
+                combine=combine, dataset_impl=self.args.dataset_impl,
+                tokens_per_sample=self.args.tokens_per_sample,
+                masking_ratio=self.args.masking_ratio
+            )
+            all_datasets.append(("mlm", dataset_mono))
 
         self.datasets[split] = RoundRobinZipDatasets(
-            OrderedDict([("seq2seq", dataset_mt), ("mlm", dataset_mono)]), 
+            OrderedDict(all_datasets), 
             eval_key=None if self.training else "seq2seq")
 
     def build_dataset_for_inference(self, src_tokens, src_lengths):
         src_langs = [self.args.source_lang] * len(src_lengths)
         tgt_langs = [self.args.target_lang] * len(src_lengths)
-        return LanguagePairLangidDataset(
+        dataset_mt = LanguagePairLangidDataset(
             src_tokens, src_lengths, self.source_dictionary,
             src_langs, tgt_langs=tgt_langs,
             encoder_langtok=self.args.encoder_langtok,
             decoder_langtok=self.args.decoder_langtok
         )
+        return RoundRobinZipDatasets(
+             OrderedDict([("seq2seq", dataset_mt)]),
+             eval_key="seq2seq")
 
     def build_model(self, args):
         from fairseq import models
@@ -306,8 +323,8 @@ class TranslationMtlMultitaskTask(FairseqTask):
                 - logging outputs to display while training
         """
         model.train()
-        self.criterions['seq2seq'].train()
-        self.criterions['mlm'].train()
+        for kk in self.criterions.keys():
+            self.criterions[kk].train()
         agg_loss, agg_sample_size, agg_logging_output = 0., 0., {}
 
         """
@@ -323,7 +340,7 @@ class TranslationMtlMultitaskTask(FairseqTask):
         print("[debug][task:data]==========================")
         """
 
-        # seq2seq
+        # seq2seq for MT
         loss_seq2seq, sample_size, logging_output = self.criterions['seq2seq'](model.models['seq2seq'], sample['seq2seq'])
         if ignore_grad:
             loss_seq2seq *= 0
@@ -346,33 +363,35 @@ class TranslationMtlMultitaskTask(FairseqTask):
         """
 
         # mlm
-        loss_mlm, sample_size_mlm, logging_output = self.criterions['mlm'](model.models['mlm'], sample['mlm'])
-        if ignore_grad:
-            loss_mlm *= 0
-        optimizer.backward(loss_mlm)
-        # agg_loss += loss_mlm.detach().item()
-        agg_loss += loss_mlm
-        agg_sample_size += sample_size_mlm
-        agg_logging_output['mlm'] = logging_output
+        if self.multitask_mlm:
+            loss_mlm, sample_size_mlm, logging_output = self.criterions['mlm'](model.models['mlm'], sample['mlm'])
+            if ignore_grad:
+                loss_mlm *= 0
+            optimizer.backward(loss_mlm)
+            # agg_loss += loss_mlm.detach().item()
+            agg_loss += loss_mlm
+            agg_sample_size += sample_size_mlm
+            agg_logging_output['mlm'] = logging_output
 
         return agg_loss, agg_sample_size, agg_logging_output
 
     def valid_step(self, sample, model, criterion):
         model.eval()
+        for kk in self.criterions.keys():
+            self.criterions[kk].eval()
         with torch.no_grad():
             loss, sample_size, logging_output = self.criterions['seq2seq'](model.models['seq2seq'], sample['seq2seq'])
         return loss, sample_size, {'seq2seq': logging_output}
 
     def inference_step(self, generator, models, sample, prefix_tokens=None):
+        seq2seq_models = [m.models['seq2seq'] for m in models]
         with torch.no_grad():
-            return generator.generate(models['seq2seq'], sample, prefix_tokens=prefix_tokens)
+            return generator.generate(seq2seq_models, sample, prefix_tokens=prefix_tokens)
 
     def grad_denom(self, sample_sizes, criterion):
         return criterion.__class__.grad_denom(sample_sizes)
 
     def aggregate_logging_outputs(self, logging_outputs, criterion):
-        # return criterion.__class__.aggregate_logging_outputs(logging_outputs)
-        # logging_output_keys = ["seq2seq", "mlm"]
         logging_output_keys = logging_outputs[0].keys()
 
         agg_logging_outputs = {
@@ -403,11 +422,10 @@ class TranslationMtlMultitaskTask(FairseqTask):
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""
-        # return (self.args.max_source_positions, self.args.max_target_positions)
-        return {
-            "seq2seq": (self.args.max_source_positions, self.args.max_target_positions),
-            "mlm": (self.args.max_source_positions, )
-        }
+        _max_pos = {"seq2seq": (self.args.max_source_positions, self.args.max_target_positions)}
+        if self.multitask_mlm:
+            _max_pos["mlm"] = (self.args.max_source_positions, )
+        return _max_pos
 
     @property
     def source_dictionary(self):
