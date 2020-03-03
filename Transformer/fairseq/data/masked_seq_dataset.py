@@ -70,7 +70,8 @@ class MaskedSeqDataset(FairseqDataset):
             segment_id: int = 0,
             masking_ratio: float = 0.15,
             masking_prob: float = 0.8,
-            random_token_prob: float = 0.1
+            random_token_prob: float = 0.1,
+            static_noising: bool = True,
     ):
         # Make sure the input datasets are the ones supported
         assert (
@@ -94,6 +95,7 @@ class MaskedSeqDataset(FairseqDataset):
         self.masking_ratio = masking_ratio
         self.masking_prob = masking_prob
         self.random_token_prob = random_token_prob
+        self.static_noising = static_noising
 
         # If we have only one block then sizes needs to be updated to include
         # the classification token
@@ -202,16 +204,10 @@ class MaskedSeqDataset(FairseqDataset):
         """
         if len(samples) == 0:
             return {}
-        # To ensure determinism, we reset the state of the PRNG after every
-        # batch based on the seed and the first id of the batch. This ensures
-        # that across epochs we get the same mask for the same example. This
-        # is needed for reproducibility and is how BERT does masking
-        # TODO: Can we add deteminism without this constraint?
-        with data_utils.numpy_seed(self.seed + samples[0]["id"]):
+        
+        def _apply_mask():
             for s in samples:
-
-                # token range is needed for replacing with random token during
-                # masking
+                # token range is needed for replacing with random token during masking
                 token_range = (self.vocab.nspecial, len(self.vocab))
 
                 # mask according to specified probabilities.
@@ -230,8 +226,14 @@ class MaskedSeqDataset(FairseqDataset):
 
                 s["source"] = torch.LongTensor(tokens)
                 s["target"] = torch.LongTensor(targets)
-                s["truth"] = torch.LongTensor(s["block_one"])
-
+                # s["truth"] = torch.LongTensor(s["block_one"])
+        
+        if self.static_noising:
+            with data_utils.numpy_seed(self.seed + samples[0]["id"]):
+                _apply_mask()
+        else:
+            _apply_mask()
+            
         def merge(key):
             return data_utils.collate_tokens(
                 [s[key] for s in samples], pad_idx, eos_idx, left_pad=False
@@ -248,8 +250,8 @@ class MaskedSeqDataset(FairseqDataset):
         target = merge('target')
         target = target.index_select(0, sort_order)
 
-        truth = merge('truth')
-        truth = truth.index_select(0, sort_order)
+        # truth = merge('truth')
+        # truth = truth.index_select(0, sort_order)
  
         return {
             "id": id,
@@ -260,7 +262,6 @@ class MaskedSeqDataset(FairseqDataset):
                 "src_lengths": src_lengths,
             },
             "target": target,
-            'truth': truth,
         }
 
     def collater(
