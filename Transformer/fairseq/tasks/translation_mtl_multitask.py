@@ -143,8 +143,6 @@ class TranslationMtlMultitaskTask(FairseqTask):
                             help='replace beginning-of-sentence in target sentence with target language token')
         parser.add_argument('--tokens-per-sample', default=512, type=int,
                             help='max number of total tokens over all segments per sample for BERT dataset')
-        parser.add_argument('--multitask-mlm', action='store_true',
-                            help='use MaskedLM objective together with MT cross-entropy')
         parser.add_argument('--masking-ratio', default=0.15, type=int,
                             help='masking ratio for MaskedLM')
 
@@ -273,15 +271,12 @@ class TranslationMtlMultitaskTask(FairseqTask):
     def build_dataset_for_inference(self, src_tokens, src_lengths):
         src_langs = [self.args.source_lang] * len(src_lengths)
         tgt_langs = [self.args.target_lang] * len(src_lengths)
-        dataset_mt = LanguagePairLangidDataset(
+        return LanguagePairLangidDataset(
             src_tokens, src_lengths, self.source_dictionary,
             src_langs, tgt_langs=tgt_langs,
             encoder_langtok=self.args.encoder_langtok,
             decoder_langtok=self.args.decoder_langtok
         )
-        return RoundRobinZipDatasets(
-             OrderedDict([("seq2seq", dataset_mt)]),
-             eval_key="seq2seq")
 
     def build_model(self, args):
         from fairseq import models
@@ -311,8 +306,8 @@ class TranslationMtlMultitaskTask(FairseqTask):
                 - logging outputs to display while training
         """
         model.train()
-        for kk in self.criterions.keys():
-            self.criterions[kk].train()
+        self.criterions['seq2seq'].train()
+        self.criterions['mlm'].train()
         agg_loss, agg_sample_size, agg_logging_output = 0., 0., {}
 
         """
@@ -364,16 +359,13 @@ class TranslationMtlMultitaskTask(FairseqTask):
 
     def valid_step(self, sample, model, criterion):
         model.eval()
-        for kk in self.criterions.keys():
-            self.criterions[kk].eval()
         with torch.no_grad():
             loss, sample_size, logging_output = self.criterions['seq2seq'](model.models['seq2seq'], sample['seq2seq'])
         return loss, sample_size, {'seq2seq': logging_output}
 
     def inference_step(self, generator, models, sample, prefix_tokens=None):
-        seq2seq_models = [m.models['seq2seq'] for m in models]
         with torch.no_grad():
-            return generator.generate(seq2seq_models, sample, prefix_tokens=prefix_tokens)
+            return generator.generate(models['seq2seq'], sample, prefix_tokens=prefix_tokens)
 
     def grad_denom(self, sample_sizes, criterion):
         return criterion.__class__.grad_denom(sample_sizes)
