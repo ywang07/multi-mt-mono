@@ -15,8 +15,13 @@ class WordNoising(object):
     """Generate a noisy version of a sentence, without changing words themselves."""
     def __init__(self, dictionary, bpe_cont_marker="@@", bpe_end_marker=None):
         self.dictionary = dictionary
-        self.bpe_end = None
-        if bpe_cont_marker:
+        self.bpe_start, self.bpe_end = None, None
+        if bpe_cont_marker and bpe_cont_marker == "sentencepiece":
+            self.bpe_start = np.array([
+                self.dictionary[i].startswith('\u2581')
+                for i in range(len(self.dictionary))
+            ])
+        elif bpe_cont_marker:
             self.bpe_end = np.array([
                 not self.dictionary[i].endswith(bpe_cont_marker)
                 for i in range(len(self.dictionary))
@@ -27,15 +32,29 @@ class WordNoising(object):
                 for i in range(len(self.dictionary))
             ])
 
-        self.get_word_idx = (
-            self._get_bpe_word_idx
-            if self.bpe_end is not None
-            else self._get_token_idx
-        )
+        if self.bpe_start is not None:
+            self.get_word_idx = self._get_spm_word_idx
+        elif self.bpe_end is not None:
+            self.get_word_idx = self._get_bpe_word_idx
+        else:
+            self.get_word_idx = self._get_token_idx
 
     def noising(self, x, lengths, noising_prob=0.0):
         raise NotImplementedError()
 
+    def _get_spm_word_idx(self, x):
+        bpe_start = self.bpe_start[x]
+
+        if (x.size(0) == 1 and x.size(1) == 1):
+            # Special case when we only have one word in x. If x = [[N]],
+            # bpe_end is a scalar (bool) instead of a 2-dim array of bools,
+            # which makes the sum operation below fail.
+            return np.array([[0]])
+
+        # do a reduce front sum to generate word ids
+        word_idx = bpe_start.cumsum(0) - 1
+        return word_idx
+        
     def _get_bpe_word_idx(self, x):
         """
         Given a list of BPE tokens, for every index in the tokens list,
