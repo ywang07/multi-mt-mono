@@ -180,7 +180,7 @@ class LanguagePairLangidDataset(FairseqDataset):
         # append langid to target start
         if self.decoder_langtok:
             new_eos = self.get_decoder_langtok(tgt_lang)
-            tgt_item = torch.cat([torch.LongTensor([new_eos]), tgt_item[index]])
+            tgt_item = torch.cat([torch.LongTensor([new_eos]), tgt_item])
 
         """
         print("[debug]==========================")
