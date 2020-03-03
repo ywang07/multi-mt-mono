@@ -61,11 +61,13 @@ class TransformerMlmModel(BaseFairseqModel):
 
         assert encoders.keys() == decoders.keys()
         self.keys = list(encoders.keys())
-        self.models = nn.ModuleDict({
-            'seq2seq': FairseqEncoderDecoderModel(encoders['seq2seq'], decoders['seq2seq']),
-            'mlm': MaskedLmModel(encoders['mlm'], decoders['mlm']),
-        })
-
+        all_models = {}
+        for _key in encoders.keys():
+            if "mlm" in _key:
+                all_models[_key] = MaskedLmModel(encoders[_key], decoders[_key])
+            else:
+                all_models[_key] = FairseqEncoderDecoderModel(encoders[_key], decoders[_key])
+        self.models = nn.ModuleDict(all_models)
 
     @staticmethod
     def add_args(parser):
@@ -173,14 +175,16 @@ class TransformerMlmModel(BaseFairseqModel):
                 tgt_dict, args.decoder_embed_dim, args.decoder_embed_path
             )
 
-        encoder = cls.build_encoder(args, src_dict, encoder_embed_tokens)
-        decoder = cls.build_decoder(args, tgt_dict, decoder_embed_tokens)
-
-        encoder_mlm = encoder if args.share_encoder else cls.build_encoder(args, src_dict, encoder_embed_tokens)
-        lm_head = cls.build_lmhead(args, src_dict, encoder_embed_tokens)
-
-        encoders = {"seq2seq": encoder, "mlm": encoder_mlm}
-        decoders = {"seq2seq": decoder, "mlm": lm_head}
+        encoders, decoders = {}, {}
+        encoders["seq2seq"] = cls.build_encoder(args, src_dict, encoder_embed_tokens)
+        decoders["seq2seq"] = cls.build_decoder(args, tgt_dict, decoder_embed_tokens)
+        
+        # To be deprecated: only for compatibility for older version
+        args.multitask_mlm = getattr(args, 'multitask_mlm', True) 
+         
+        if args.multitask_mlm:
+            encoders["mlm"] = encoders["seq2seq"] if args.share_encoder else cls.build_encoder(args, src_dict, encoder_embed_tokens)
+            decoders["mlm"] = cls.build_lmhead(args, src_dict, encoder_embed_tokens)
 
         return TransformerMlmModel(encoders, decoders)
 
@@ -203,10 +207,13 @@ class TransformerMlmModel(BaseFairseqModel):
     
     def max_positions(self):
         """Maximum length supported by the model."""
-        return {
-            "seq2seq": (self.models['seq2seq'].encoder.max_positions(), self.models['seq2seq'].decoder.max_positions()),
-            "mlm": (self.models['mlm'].encoder.max_positions(), )
-        }
+        _max_pos = {}
+        for _key in self.models.keys():
+            if "mlm" in _key:
+                _max_pos[_key] = (self.models[_key].encoder.max_positions(), )
+            else:
+                _max_pos[_key] = (self.models[_key].encoder.max_positions(), self.models[_key].decoder.max_positions())
+        return _max_pos
         
         # return (self.models['seq2seq'].encoder.max_positions(), self.models['seq2seq'].decoder.max_positions())
 
