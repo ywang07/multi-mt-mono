@@ -8,7 +8,15 @@
 import torch.utils.data
 
 
-class FairseqDataset(torch.utils.data.Dataset):
+class EpochListening:
+    """Mixin for receiving updates whenever the epoch increments."""
+    def set_epoch(self, epoch):
+        """Will receive the updated epoch number at the beginning of the epoch.
+        """
+        pass
+
+
+class FairseqDataset(torch.utils.data.Dataset, EpochListening):
     """A dataset that provides helpers for batching."""
 
     def __getitem__(self, index):
