@@ -178,6 +178,7 @@ class TranslationMtlMultitaskTask(FairseqTask):
         """Add task-specific arguments to the parser."""
         # fmt: off
         parser.add_argument('data', metavar='DIR', help='path to data directory')
+        parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
         parser.add_argument('--data-mono', metavar='DIR', default=None, help='path to mono data directory')
         parser.add_argument('--lang-pairs', default=None, metavar='PAIRS',
                             help='comma-separated list of language pairs: en-de,en-fr,de-fr')
@@ -345,6 +346,12 @@ class TranslationMtlMultitaskTask(FairseqTask):
         paths = self.args.data.split(':')
         assert len(paths) > 0
         data_path = paths[epoch % len(paths)]
+
+        bt_data_path = None
+        if self.args.data_bt is not None:
+            paths_bt = self.args.data_bt.split(':')
+            bt_data_path = paths_bt[epoch % len(paths_bt)]
+
         dataset_mt = load_langpair_langid_dataset(
             data_path, split, self.lang_pairs, self.src_dict, self.tgt_dict,
             combine=combine, dataset_impl=self.args.dataset_impl,
@@ -354,7 +361,8 @@ class TranslationMtlMultitaskTask(FairseqTask):
             max_source_positions=self.args.max_source_positions,
             max_target_positions=self.args.max_target_positions,
             encoder_langtok=self.args.encoder_langtok,
-            decoder_langtok=self.args.decoder_langtok
+            decoder_langtok=self.args.decoder_langtok,
+            bt_data_path=bt_data_path,
         )
         all_datasets = [("translation", dataset_mt)]
 
