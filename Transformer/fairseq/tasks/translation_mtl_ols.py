@@ -58,8 +58,8 @@ def load_langpair_langid_ols_dataset(
     combine, dataset_impl, upsample_primary,
     left_pad_source, left_pad_target, max_source_positions, max_target_positions,
     encoder_langtok, decoder_langtok, 
-    is_train=True, language_sample_temperature=1.0,
-    seed=1, epoch=0,
+    is_train=True, seed=1, epoch=0,
+    language_sample_temperature=1.0, language_upsample_max=False,
 ):
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
@@ -131,7 +131,13 @@ def load_langpair_langid_ols_dataset(
         print("| sampling probability by language: {}".format(
             ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
             for _i, _lang in enumerate(lang_pairs)])))
-        size_ratios = (sample_probs * dataset_lengths.sum()) / dataset_lengths
+        
+        if language_upsample_max:
+            max_id = dataset_lengths.argmax()
+            max_size, max_probs = dataset_lengths[max_id], sample_probs[max_id]
+            size_ratios = sample_probs / max_probs * max_size / dataset_lengths
+        else:
+            size_ratios = (sample_probs * dataset_lengths.sum()) / dataset_lengths
         print("| up/down sampling ratio by language: {}".format(
             ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
             for _i, _lang in enumerate(lang_pairs)])))
@@ -144,6 +150,7 @@ def load_langpair_langid_ols_dataset(
                 epoch=epoch,
                 replace=size_ratios[i] > 1.0
             )
+            # if size_ratios[i] != 1.0 else lang_pair_datasets[i]
             for i, d in enumerate(lang_pair_datasets)]
         dataset = ConcatDataset(resampled_lang_pair_datasets)
 
@@ -225,6 +232,9 @@ class TranslationMtlOlsTask(FairseqTask):
                             help='replace beginning-of-sentence in target sentence with target language token')
         parser.add_argument('--language-sample-temperature', default=1.0, type=float, 
                             help='sampling temperature for multi-languages')
+        parser.add_argument('--language-upsample-max', action='store_true',
+                            help='upsample to make the max-capacity language a full set '
+                                 '(default: upsample and downsample to maintain the same total corpus size)')
     
     def __init__(self, args, src_dict, tgt_dict, training):
         super().__init__(args)
@@ -378,9 +388,10 @@ class TranslationMtlOlsTask(FairseqTask):
             encoder_langtok=self.args.encoder_langtok,
             decoder_langtok=self.args.decoder_langtok,
             is_train=(split == self.args.train_subset),
-            language_sample_temperature=self.args.language_sample_temperature,
             seed=self.args.seed,
             epoch=epoch,
+            language_sample_temperature=self.args.language_sample_temperature,
+            language_upsample_max=self.args.language_upsample_max,
         )
     
     def build_dataset_for_inference(self, src_tokens, src_lengths):
@@ -416,7 +427,7 @@ class TranslationMtlOlsTask(FairseqTask):
         model.train()
 
         """
-        print("[debug]==========================")
+        print("\n[debug]==========================")
         print("sample:    {}".format(type(sample)))
         print("\nsrc_tokens:")
         for s in sample['net_input']['src_tokens']:
