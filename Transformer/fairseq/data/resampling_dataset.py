@@ -62,8 +62,9 @@ class ResamplingDataset(FairseqDataset):
 
         assert size_ratio > 0.0
         if not self.replace:
-            assert size_ratio < 1.0
+            assert size_ratio <= 1.0
         self.size_ratio = float(size_ratio)
+        self.orig_size = len(dataset)
         self.actual_size = np.ceil(len(dataset) * self.size_ratio).astype(int)
 
         self.batch_by_size = batch_by_size
@@ -115,18 +116,27 @@ class ResamplingDataset(FairseqDataset):
     def prefetch(self, indices):
         self.dataset.prefetch(self._cur_indices.array[indices])
 
-    def set_epoch(self, epoch):
-        super().set_epoch(epoch)
+    def reset_size_ratio(self, size_ratio):
+        self.size_ratio = float(size_ratio)
+        if self.size_ratio > 1.0:
+            self.replace = True
+        self.actual_size = np.ceil(self.orig_size * self.size_ratio).astype(int)
 
-        print("[debug] set new epoch={} for resampling dataset".format(epoch))
+    def set_epoch(self, epoch, **kwargs):
+        super().set_epoch(epoch, **kwargs)
+
+        # print("[debug] set new epoch={} for resampling dataset".format(epoch))
 
         if hasattr(self.dataset, 'set_epoch'):
-            self.dataset.set_epoch(epoch)
+            self.dataset.set_epoch(epoch, **kwargs)
 
         if epoch == self._cur_epoch:
             return
 
         self._cur_epoch = epoch
+
+        if kwargs.get('size_ratio') is not None:
+            self.reset_size_ratio(kwargs['size_ratio'])
 
         # Generate a weighted sample of indices as a function of the
         # random seed and the current epoch.

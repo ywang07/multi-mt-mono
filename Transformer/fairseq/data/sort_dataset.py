@@ -52,7 +52,11 @@ class SortDataset(FairseqDataset):
     def prefetch(self, indices):
         self.dataset.prefetch(indices)
 
-    def set_epoch(self, epoch):
-        super().set_epoch(epoch)
+    def set_epoch(self, epoch, **kwargs):
+        super().set_epoch(epoch, **kwargs)
         if hasattr(self.dataset, 'set_epoch'):
-            self.dataset.set_epoch(epoch)
+            self.dataset.set_epoch(epoch, **kwargs)
+
+    def set_sort_order(self, sort_order):
+        self.sort_order = sort_order
+        assert all(len(so) == len(self.dataset) for so in sort_order)

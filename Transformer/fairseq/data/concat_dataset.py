@@ -10,6 +10,7 @@ import bisect
 import numpy as np
 
 from . import FairseqDataset
+from .resampling_dataset import ResamplingDataset
 
 
 class ConcatDataset(FairseqDataset):
@@ -86,8 +87,22 @@ class ConcatDataset(FairseqDataset):
                 ds.prefetch([(i - frm) % real_size for i in indices if frm <= i < to])
             frm = to
 
-    def set_epoch(self, epoch):
-        super().set_epoch(epoch)
-        for ds in self.datasets:
+    def set_epoch(self, epoch, **kwargs):
+        super().set_epoch(epoch, **kwargs)
+        size_ratios = kwargs.get('size_ratios')
+        k = 0
+        for i, ds in enumerate(self.datasets):
             if hasattr(ds, 'set_epoch'):
-                ds.set_epoch(epoch)
+                if size_ratios is not None and isinstance(ds, ResamplingDataset):
+                    ds.set_epoch(epoch, size_ratio=size_ratios[k], **kwargs)
+                    k += 1
+                else:
+                    ds.set_epoch(epoch, **kwargs)
+
+        # have to reset sizes to keep valid indices
+        if size_ratios is not None:
+            self.set_dataset_sizes()
+    
+    def set_dataset_sizes(self):
+        self.cumulative_sizes = self.cumsum(self.datasets, self.sample_ratios)
+        self.real_sizes = [len(d) for d in self.datasets]
