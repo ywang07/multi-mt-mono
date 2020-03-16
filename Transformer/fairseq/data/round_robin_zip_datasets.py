@@ -100,6 +100,22 @@ class RoundRobinZipDatasets(FairseqDataset):
             ])
         return np.arange(len(self))
 
+    def update_ordered_indices(self):
+        self._ordered_indices = OrderedDict([
+            (key, dataset.ordered_indices())
+            for key, dataset in self.datasets.items()
+            ])
+
+    def set_epoch(self, epoch, **kwargs):
+        super().set_epoch(epoch, **kwargs)
+        
+        for key, dataset in self.datasets.items():
+            if self.longest_dataset is None or len(dataset) > len(self.longest_dataset):
+                self.longest_dataset = dataset
+                self.longest_dataset_key = key
+        
+        self.update_ordered_indices()
+
     @property
     def supports_prefetch(self):
         return all(
