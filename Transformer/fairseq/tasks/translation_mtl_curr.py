@@ -40,7 +40,7 @@ def _lang_token_index(dic: Dictionary, lang: str):
     return idx
 
 
-def _get_sample_prob(dataset_lens, temp):
+def get_sample_prob(dataset_lens, temp):
     """
     Temperature based sampling
     https://arxiv.org/abs/1907.05019
@@ -53,7 +53,7 @@ def _get_sample_prob(dataset_lens, temp):
     return smoothed_prob
 
 
-def _get_size_ratio(sample_probs, dataset_lengths, language_upsample_max=False):
+def get_size_ratio(sample_probs, dataset_lengths, language_upsample_max=False):
     if language_upsample_max:
         max_id = dataset_lengths.argmax()
         max_size, max_probs = dataset_lengths[max_id], sample_probs[max_id]
@@ -138,11 +138,11 @@ def load_langpair_langid_ols_dataset(
         dataset_lengths = np.array([len(d) for d in lang_pair_datasets], dtype=float)
         print("| loaded {} language pairs".format(len(dataset_lengths)))
         print("| sampling temperature: T = {} @ epoch {}".format(language_sample_temperature, epoch))
-        sample_probs = _get_sample_prob(dataset_lengths, temp=language_sample_temperature)
+        sample_probs = get_sample_prob(dataset_lengths, temp=language_sample_temperature)
         print("| sampling probability by language: {}".format(
             ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
             for _i, _lang in enumerate(lang_pairs)])))
-        size_ratios = _get_size_ratio(sample_probs, dataset_lengths, language_upsample_max)
+        size_ratios = get_size_ratio(sample_probs, dataset_lengths, language_upsample_max)
         print("| up/down sampling ratio by language: {}".format(
             ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
             for _i, _lang in enumerate(lang_pairs)])))
@@ -318,6 +318,40 @@ class TranslationMtlCurriculumTask(FairseqTask):
             return t + self.args.min_language_sample_temperature
         raise NotImplementedError
 
+    def set_dataset_epoch(self, dataset, seed=1, epoch=0):
+        """
+        set epoch for dataset resampling
+        update size ratio if changing sampling temperature
+        """
+        # initialize the dataset with the correct starting epoch
+        # has to do so for online resampling
+        if epoch > 0 and self.args.language_temperature_scheduler != "static" and \
+            epoch <= self.args.language_sample_warmup_epochs:
+            new_temp = self.get_sampling_temperature(epoch)
+            sample_probs = get_sample_prob(self.data_lengths, new_temp)
+            size_ratios = get_size_ratio(
+                sample_probs, self.data_lengths, 
+                language_upsample_max=self.args.language_upsample_max)
+            print("| sampling temperature: T = {} @ epoch {}".format(new_temp, epoch))
+            print("| sampling probability by language: {}".format(
+                ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
+                for _i, _lang in enumerate(self.lang_pairs)])))
+            print("| up/down sampling ratio by language: {}".format(
+                ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
+                for _i, _lang in enumerate(self.lang_pairs)])))
+            
+            # update epoch and size ratios
+            dataset.set_epoch(epoch, size_ratios=size_ratios)
+
+            # reset sort order
+            if isinstance(dataset, SortDataset):
+                with data_utils.numpy_seed(seed + epoch):
+                    shuffle = np.random.permutation(len(dataset))
+                dataset.set_sort_order(sort_order=[shuffle, dataset.sizes])
+        else:
+            dataset.set_epoch(epoch)
+        return dataset
+
     def get_batch_iterator(
         self, dataset, max_tokens=None, max_sentences=None, max_positions=None,
         ignore_invalid_inputs=False, required_batch_size_multiple=1,
@@ -356,33 +390,8 @@ class TranslationMtlCurriculumTask(FairseqTask):
         """
         assert isinstance(dataset, FairseqDataset)
 
-        # initialize the dataset with the correct starting epoch
-        # has to do so for online resampling
-        if epoch > 0 and self.args.language_temperature_scheduler != "static" and \
-            epoch < self.args.language_sample_warmup_epochs:
-            new_temp = self.get_sampling_temperature(epoch)
-            sample_probs = _get_sample_prob(self.data_lengths, new_temp)
-            size_ratios = _get_size_ratio(
-                sample_probs, self.data_lengths, 
-                language_upsample_max=self.args.language_upsample_max)
-            print("| sampling temperature: T = {} @ epoch {}".format(new_temp, epoch))
-            print("| sampling probability by language: {}".format(
-                ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
-                for _i, _lang in enumerate(self.lang_pairs)])))
-            print("| up/down sampling ratio by language: {}".format(
-                ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
-                for _i, _lang in enumerate(self.lang_pairs)])))
-            
-            # update epoch and size ratios
-            dataset.set_epoch(epoch, size_ratios=size_ratios)
-
-            # reset sort order
-            if isinstance(dataset, SortDataset):
-                with data_utils.numpy_seed(seed + epoch):
-                    shuffle = np.random.permutation(len(dataset))
-                dataset.set_sort_order(sort_order=[shuffle, dataset.sizes])
-        else:
-            dataset.set_epoch(epoch)
+        # set epoch for online resampling
+        dataset = self.set_dataset_epoch(dataset, seed=seed, epoch=epoch)
 
         # get indices ordered by example size
         with data_utils.numpy_seed(seed):
