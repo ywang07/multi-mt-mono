@@ -572,9 +572,11 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""
-        _max_pos = {"seq2seq": (self.args.max_source_positions, self.args.max_target_positions)}
+        _max_pos = {"translation": (self.args.max_source_positions, self.args.max_target_positions)}
         if self.multitask_mlm:
             _max_pos["mlm"] = (self.args.max_source_positions, )
+        if self.multitask_dae:
+            _max_pos["dae"] = (self.args.max_source_positions, self.args.max_target_positions)
         return _max_pos
 
     @property
