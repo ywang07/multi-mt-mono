@@ -52,7 +52,8 @@ class WordNoising(object):
             return np.array([[0]])
 
         # do a reduce front sum to generate word ids
-        word_idx = bpe_start.cumsum(0) - 1
+        word_idx = bpe_start.cumsum(0)
+        word_idx -= 1 if min(word_idx) > 0 else 0 
         return word_idx
         
     def _get_bpe_word_idx(self, x):
