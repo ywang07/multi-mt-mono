@@ -14,18 +14,20 @@ import numpy as np
 import torch
 
 from fairseq import options, utils
+from . import FairseqTask, register_task
 from fairseq.data import (
     iterators,
     FairseqDataset,
     Dictionary,
-    ConcatDataset,
     data_utils,
-    indexed_dataset,
 )
 from fairseq.data.language_pair_langid_dataset import LanguagePairLangidDataset
-from fairseq.data.resampling_dataset import ResamplingDataset
 from fairseq.data.sort_dataset import SortDataset
-from . import FairseqTask, register_task
+from fairseq.data.langpair_dataset_loader import (
+    LangpairDatasetLoader,
+    get_size_ratio,
+    get_sample_prob
+)
 
 
 def _lang_token(lang: str):
@@ -38,162 +40,6 @@ def _lang_token_index(dic: Dictionary, lang: str):
     assert idx != dic.unk_index, \
         'cannot find language token for lang {}'.format(lang)
     return idx
-
-
-def get_sample_prob(dataset_lens, temp):
-    """
-    Temperature based sampling
-    https://arxiv.org/abs/1907.05019
-    
-    p_l \\prop (D_l / \\sum D_k) ^ 1/T
-    """
-    prob = dataset_lens / dataset_lens.sum()
-    smoothed_prob = prob ** (1./temp)
-    smoothed_prob = smoothed_prob / smoothed_prob.sum()
-    return smoothed_prob
-
-
-def get_size_ratio(sample_probs, dataset_lengths, language_upsample_max=False):
-    if language_upsample_max:
-        max_id = dataset_lengths.argmax()
-        max_size, max_probs = dataset_lengths[max_id], sample_probs[max_id]
-        size_ratios = sample_probs / max_probs * max_size / dataset_lengths
-    else:
-        size_ratios = (sample_probs * dataset_lengths.sum()) / dataset_lengths
-    return size_ratios
-
-
-def load_langpair_langid_ols_dataset(
-    data_path, split, lang_pairs, src_dict, tgt_dict,
-    combine, dataset_impl, upsample_primary,
-    left_pad_source, left_pad_target, max_source_positions, max_target_positions,
-    encoder_langtok, decoder_langtok, 
-    seed=1, epoch=0, resample=False,
-    language_upsample_max=False, language_sample_temperature=1.0, 
-):
-    def split_exists(split, src, tgt, lang, data_path):
-        filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
-        return indexed_dataset.dataset_exists(filename, impl=dataset_impl)
-    
-    def _load_dataset(src, tgt, data_path, src_datasets, tgt_datasets, src_langs, tgt_langs):
-        for k in itertools.count():
-            split_k = split + (str(k) if k > 0 else '')
-
-            # infer langcode
-            if split_exists(split_k, src, tgt, src, data_path):
-                prefix = os.path.join(data_path, '{}.{}-{}.'.format(split_k, src, tgt))
-            elif split_exists(split_k, tgt, src, src, data_path):
-                prefix = os.path.join(data_path, '{}.{}-{}.'.format(split_k, tgt, src))
-            else:
-                if k > 0:
-                    break
-                else:
-                    raise FileNotFoundError('Dataset not found: {} ({})'.format(split, data_path))
-
-            src_datasets.append(indexed_dataset.make_dataset(
-                prefix + src, impl=dataset_impl, fix_lua_indexing=True, dictionary=src_dict))
-            tgt_datasets.append(indexed_dataset.make_dataset(
-                prefix + tgt, impl=dataset_impl, fix_lua_indexing=True, dictionary=tgt_dict))
-
-            print('| {} {} {}-{} {} examples'.format(data_path, split_k, src, tgt, len(src_datasets[-1])))
-            src_langs += [src] * len(src_datasets[-1])
-            tgt_langs += [tgt] * len(src_datasets[-1])
-
-            if not combine:
-                break
-        return src_datasets, tgt_datasets, src_langs, tgt_langs
-    
-    # for resampling
-    if resample:
-        lang_pair_datasets = []
-
-        for lang_pair in lang_pairs:
-            src, tgt = lang_pair.split("-")
-
-            src_datasets, tgt_datasets, src_langs, tgt_langs = _load_dataset(
-                src, tgt, data_path, [], [], [], [])
-
-            assert len(src_datasets) == len(tgt_datasets)
-            assert len(src_langs) == len(tgt_langs)
-            if len(src_datasets) == 1:
-                src_dataset, tgt_dataset = src_datasets[0], tgt_datasets[0]
-            else:
-                src_dataset = ConcatDataset(src_datasets)
-                tgt_dataset = ConcatDataset(tgt_datasets)
-
-            lang_pair_dataset = LanguagePairLangidDataset(
-                src_dataset, src_dataset.sizes, src_dict, src_langs,
-                tgt_dataset, tgt_dataset.sizes, tgt_dict, tgt_langs,
-                left_pad_source=left_pad_source,
-                left_pad_target=left_pad_target,
-                shuffle=True,
-                max_source_positions=max_source_positions,
-                max_target_positions=max_target_positions,
-                encoder_langtok=encoder_langtok,
-                decoder_langtok=decoder_langtok
-            )
-            lang_pair_datasets.append(lang_pair_dataset)
-        
-        # resampling
-        dataset_lengths = np.array([len(d) for d in lang_pair_datasets], dtype=float)
-        print("| loaded {} language pairs".format(len(dataset_lengths)))
-        print("| sampling temperature: T = {} @ epoch {}".format(language_sample_temperature, epoch))
-        sample_probs = get_sample_prob(dataset_lengths, temp=language_sample_temperature)
-        print("| sampling probability by language: {}".format(
-            ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
-            for _i, _lang in enumerate(lang_pairs)])))
-        size_ratios = get_size_ratio(sample_probs, dataset_lengths, language_upsample_max)
-        print("| up/down sampling ratio by language: {}".format(
-            ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
-            for _i, _lang in enumerate(lang_pairs)])))
-        
-        resampled_lang_pair_datasets = [
-            ResamplingDataset(
-                lang_pair_datasets[i],
-                size_ratio=size_ratios[i],
-                seed=seed,
-                epoch=epoch,
-                replace=size_ratios[i] > 1.0
-            )
-            for i, d in enumerate(lang_pair_datasets)]
-        dataset = ConcatDataset(resampled_lang_pair_datasets)
-
-        # shuffle dataset
-        with data_utils.numpy_seed(seed + epoch):
-            shuffle = np.random.permutation(len(dataset))
-        # sort primarily by source length, then by shuffle seeds
-        return SortDataset(dataset, sort_order=[shuffle, dataset.sizes]), dataset_lengths
-        
-    # no resampling
-    src_datasets, tgt_datasets = [], []
-    src_langs, tgt_langs = [], []
-
-    for lang_pair in lang_pairs:
-        src, tgt = lang_pair.split("-")
-        src_datasets, tgt_datasets, src_langs, tgt_langs = _load_dataset(
-            src, tgt, data_path, src_datasets, tgt_datasets, src_langs, tgt_langs)
-        
-    assert len(src_datasets) == len(tgt_datasets)
-    assert len(src_langs) == len(tgt_langs)
-
-    if len(src_datasets) == 1:
-        src_dataset, tgt_dataset = src_datasets[0], tgt_datasets[0]
-    else:
-        src_dataset = ConcatDataset(src_datasets)
-        tgt_dataset = ConcatDataset(tgt_datasets)
-
-    dataset = LanguagePairLangidDataset(
-        src_dataset, src_dataset.sizes, src_dict, src_langs,
-        tgt_dataset, tgt_dataset.sizes, tgt_dict, tgt_langs,
-        left_pad_source=left_pad_source,
-        left_pad_target=left_pad_target,
-        shuffle=True,
-        max_source_positions=max_source_positions,
-        max_target_positions=max_target_positions,
-        encoder_langtok=encoder_langtok,
-        decoder_langtok=decoder_langtok
-    )
-    return dataset, None
 
 
 @register_task('translation_mtl_curr')
@@ -235,6 +81,11 @@ class TranslationMtlCurriculumTask(FairseqTask):
                                  'language token. (src/tgt) default to be target lan_id')
         parser.add_argument('--decoder-langtok', action='store_true',
                             help='replace beginning-of-sentence in target sentence with target language token')
+        
+        # BT
+        parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
+
+        # data schedule
         parser.add_argument('--language-sample-temperature', default=1.0, type=float, 
                             help='sampling temperature for multi-languages')
         parser.add_argument('--language-upsample-max', action='store_true',
@@ -430,15 +281,25 @@ class TranslationMtlCurriculumTask(FairseqTask):
         assert len(paths) > 0
         data_path = paths[epoch % len(paths)]
 
+        bt_data_path = None
+        if self.args.data_bt is not None:
+            paths_bt = self.args.data_bt.split(':')
+            bt_data_path = paths_bt[epoch % len(paths_bt)]
+
         language_sample_temperature = getattr(self.args, "min_language_sample_temperature", 1.0)
         if self.args.language_temperature_scheduler == "static":
             language_sample_temperature = self.args.language_sample_temperature
-        resample = not (language_sample_temperature == 1.0 and self.args.language_temperature_scheduler == "static")
+        resample = language_sample_temperature != 1.0 or self.args.language_temperature_scheduler != "static"
         is_train = (split == self.args.train_subset)
         
-        self.datasets[split], self.data_lengths = load_langpair_langid_ols_dataset(
+        from fairseq import meters
+        load_timer = meters.StopwatchMeter()
+        load_timer.start()
+
+        dataset_loader = LangpairDatasetLoader(
             data_path, split, self.lang_pairs, self.src_dict, self.tgt_dict,
-            combine=combine, dataset_impl=self.args.dataset_impl,
+            combine=combine, 
+            dataset_impl=self.args.dataset_impl,
             upsample_primary=self.args.upsample_primary,
             left_pad_source=self.args.left_pad_source,
             left_pad_target=self.args.left_pad_target,
@@ -451,7 +312,14 @@ class TranslationMtlCurriculumTask(FairseqTask):
             resample=(resample and is_train),
             language_sample_temperature=language_sample_temperature,
             language_upsample_max=self.args.language_upsample_max,
+            bt_data_path=bt_data_path,
+            is_train=is_train
         )
+        self.datasets[split], data_lengths = dataset_loader.load_all_langpair_dataset()
+        self.data_lengths = data_lengths if is_train else self.data_lengths
+
+        load_timer.stop()
+        print('| loading dataset took total {} seconds'.format(load_timer.sum))
     
     def build_dataset_for_inference(self, src_tokens, src_lengths):
         src_langs = [self.args.source_lang] * len(src_lengths)

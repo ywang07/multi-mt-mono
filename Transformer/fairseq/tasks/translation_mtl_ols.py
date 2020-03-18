@@ -27,6 +27,7 @@ from fairseq.data.resampling_dataset import ResamplingDataset
 from fairseq.data.sort_dataset import SortDataset
 from . import FairseqTask, register_task
 
+from fairseq.data.langpair_dataset_loader import LangpairDatasetLoader
 
 def _lang_token(lang: str):
     return '__{}__'.format(lang)
@@ -40,19 +41,6 @@ def _lang_token_index(dic: Dictionary, lang: str):
     return idx
 
 
-def _get_sample_prob(dataset_lens, temp):
-    """
-    Temperature based sampling
-    https://arxiv.org/abs/1907.05019
-    
-    p_l \\prop (D_l / \\sum D_k) ^ 1/T
-    """
-    prob = dataset_lens / dataset_lens.sum()
-    smoothed_prob = prob ** (1./temp)
-    smoothed_prob = smoothed_prob / smoothed_prob.sum()
-    return smoothed_prob
-
-
 def load_langpair_langid_ols_dataset(
     data_path, split, lang_pairs, src_dict, tgt_dict,
     combine, dataset_impl, upsample_primary,
@@ -61,6 +49,21 @@ def load_langpair_langid_ols_dataset(
     is_train=True, seed=1, epoch=0,
     language_sample_temperature=1.0, language_upsample_max=False,
 ):
+    """
+    deprecated 
+    """
+    def _get_sample_prob(dataset_lens, temp):
+        """
+        Temperature based sampling
+        https://arxiv.org/abs/1907.05019
+        
+        p_l \\prop (D_l / \\sum D_k) ^ 1/T
+        """
+        prob = dataset_lens / dataset_lens.sum()
+        smoothed_prob = prob ** (1./temp)
+        smoothed_prob = smoothed_prob / smoothed_prob.sum()
+        return smoothed_prob
+
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
         return indexed_dataset.dataset_exists(filename, impl=dataset_impl)
@@ -230,6 +233,11 @@ class TranslationMtlOlsTask(FairseqTask):
                                  'language token. (src/tgt) default to be target lan_id')
         parser.add_argument('--decoder-langtok', action='store_true',
                             help='replace beginning-of-sentence in target sentence with target language token')
+        
+        # BT
+        parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
+
+        # online sampling
         parser.add_argument('--language-sample-temperature', default=1.0, type=float, 
                             help='sampling temperature for multi-languages')
         parser.add_argument('--language-upsample-max', action='store_true',
@@ -377,9 +385,22 @@ class TranslationMtlOlsTask(FairseqTask):
         assert len(paths) > 0
         data_path = paths[epoch % len(paths)]
 
-        self.datasets[split] = load_langpair_langid_ols_dataset(
+        bt_data_path = None
+        if self.args.data_bt is not None:
+            paths_bt = self.args.data_bt.split(':')
+            bt_data_path = paths_bt[epoch % len(paths_bt)]
+
+        from fairseq import meters
+        load_timer = meters.StopwatchMeter()
+        load_timer.start()
+
+        resample = self.args.language_sample_temperature != 1.0
+        is_train = (split == self.args.train_subset)
+
+        dataset_loader = LangpairDatasetLoader(
             data_path, split, self.lang_pairs, self.src_dict, self.tgt_dict,
-            combine=combine, dataset_impl=self.args.dataset_impl,
+            combine=combine, 
+            dataset_impl=self.args.dataset_impl,
             upsample_primary=self.args.upsample_primary,
             left_pad_source=self.args.left_pad_source,
             left_pad_target=self.args.left_pad_target,
@@ -387,12 +408,18 @@ class TranslationMtlOlsTask(FairseqTask):
             max_target_positions=self.args.max_target_positions,
             encoder_langtok=self.args.encoder_langtok,
             decoder_langtok=self.args.decoder_langtok,
-            is_train=(split == self.args.train_subset),
             seed=self.args.seed,
             epoch=epoch,
+            resample=(resample and is_train),
             language_sample_temperature=self.args.language_sample_temperature,
             language_upsample_max=self.args.language_upsample_max,
+            bt_data_path=bt_data_path,
+            is_train=is_train
         )
+        self.datasets[split], _ = dataset_loader.load_all_langpair_dataset()
+
+        load_timer.stop()
+        print('| loading dataset took total {} seconds'.format(load_timer.sum))
     
     def build_dataset_for_inference(self, src_tokens, src_lengths):
         src_langs = [self.args.source_lang] * len(src_lengths)

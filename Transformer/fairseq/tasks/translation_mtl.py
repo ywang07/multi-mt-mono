@@ -15,12 +15,12 @@ import torch
 from fairseq import options, utils
 from fairseq.data import (
     Dictionary,
-    ConcatDataset,
     data_utils,
-    indexed_dataset,
 )
-from fairseq.data.language_pair_langid_dataset import LanguagePairLangidDataset
 from . import FairseqTask, register_task
+
+from fairseq.data.language_pair_langid_dataset import LanguagePairLangidDataset
+from fairseq.data.langpair_dataset_loader import LangpairDatasetLoader
 
 
 def _lang_token(lang: str):
@@ -33,92 +33,6 @@ def _lang_token_index(dic: Dictionary, lang: str):
     assert idx != dic.unk_index, \
         'cannot find language token for lang {}'.format(lang)
     return idx
-
-
-def load_langpair_langid_dataset(
-    data_path, split, lang_pairs, src_dict, tgt_dict,
-    combine, dataset_impl, upsample_primary,
-    left_pad_source, left_pad_target, max_source_positions, max_target_positions,
-    encoder_langtok, decoder_langtok,
-    bt_data_path=None
-):
-    def split_exists(split, src, tgt, lang, data_path):
-        filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
-        return indexed_dataset.dataset_exists(filename, impl=dataset_impl)
-
-    def _load_dataset(src, tgt, data_path, src_datasets, tgt_datasets, src_langs, tgt_langs, is_bt=False):
-        for k in itertools.count():
-            split_k = split + (str(k) if k > 0 else '')
-
-            # infer langcode
-            if split_exists(split_k, src, tgt, src, data_path):
-                prefix = os.path.join(data_path, '{}.{}-{}.'.format(split_k, src, tgt))
-            elif split_exists(split_k, tgt, src, src, data_path) and not is_bt:
-                prefix = os.path.join(data_path, '{}.{}-{}.'.format(split_k, tgt, src))
-            else:
-                if k > 0:
-                    break
-                else:
-                    raise FileNotFoundError('Dataset not found: {} ({})'.format(split, data_path))
-
-            src_datasets.append(indexed_dataset.make_dataset(
-                prefix + src, impl=dataset_impl, fix_lua_indexing=True, dictionary=src_dict))
-            tgt_datasets.append(indexed_dataset.make_dataset(
-                prefix + tgt, impl=dataset_impl, fix_lua_indexing=True, dictionary=tgt_dict))
-
-            print('| {} {} {}-{} {} examples'.format(data_path, split_k, src, tgt, len(src_datasets[-1])))
-            src_langs += [src] * len(src_datasets[-1])
-            tgt_langs += [tgt] * len(src_datasets[-1])
-
-            if not combine:
-                break
-        return src_datasets, tgt_datasets, src_langs, tgt_langs
-
-    src_datasets = []
-    tgt_datasets = []
-    src_langs, tgt_langs = [], []
-
-    # load bitext corpus
-    for lang_pair in lang_pairs:
-        src, tgt = lang_pair.split("-")
-        src_datasets, tgt_datasets, src_langs, tgt_langs = _load_dataset(
-            src, tgt, data_path, src_datasets, tgt_datasets, src_langs, tgt_langs
-        )
-    
-    # load bt corpus
-    if bt_data_path is not None :
-        for lang_pair in lang_pairs:
-            src, tgt = lang_pair.split("-")
-            if split_exists(split, src, tgt, src, bt_data_path):
-                src_datasets, tgt_datasets, src_langs, tgt_langs = _load_dataset(
-                    src, tgt, bt_data_path, src_datasets, tgt_datasets, 
-                    src_langs, tgt_langs, is_bt=True
-                )
-            else:
-                print("| [warning] skipped, BT {}-{} dataset not found".format(src, tgt))
-
-    assert len(src_datasets) == len(tgt_datasets)
-    assert len(src_langs) == len(tgt_langs)
-
-    if len(src_datasets) == 1:
-        src_dataset, tgt_dataset = src_datasets[0], tgt_datasets[0]
-    else:
-        sample_ratios = [1] * len(src_datasets)
-        sample_ratios[0] = upsample_primary
-        src_dataset = ConcatDataset(src_datasets, sample_ratios)
-        tgt_dataset = ConcatDataset(tgt_datasets, sample_ratios)
-
-    return LanguagePairLangidDataset(
-        src_dataset, src_dataset.sizes, src_dict, src_langs,
-        tgt_dataset, tgt_dataset.sizes, tgt_dict, tgt_langs,
-        left_pad_source=left_pad_source,
-        left_pad_target=left_pad_target,
-        shuffle=True,
-        max_source_positions=max_source_positions,
-        max_target_positions=max_target_positions,
-        encoder_langtok=encoder_langtok,
-        decoder_langtok=decoder_langtok
-    )
 
 
 @register_task('translation_mtl')
@@ -244,7 +158,9 @@ class TranslationMtlTask(FairseqTask):
         load_timer = meters.StopwatchMeter()
         load_timer.start()
 
-        self.datasets[split] = load_langpair_langid_dataset(
+        is_train = (split == self.args.train_subset)
+
+        dataset_loader = LangpairDatasetLoader(
             data_path, split, self.lang_pairs, self.src_dict, self.tgt_dict,
             combine=combine, 
             dataset_impl=self.args.dataset_impl,
@@ -255,8 +171,12 @@ class TranslationMtlTask(FairseqTask):
             max_target_positions=self.args.max_target_positions,
             encoder_langtok=self.args.encoder_langtok,
             decoder_langtok=self.args.decoder_langtok,
+            seed=self.args.seed,
+            epoch=epoch,
             bt_data_path=bt_data_path,
+            is_train=is_train
         )
+        self.datasets[split], _ = dataset_loader.load_all_langpair_dataset()
 
         load_timer.stop()
         print('(loading dataset took total {} seconds)'.format(load_timer.sum))

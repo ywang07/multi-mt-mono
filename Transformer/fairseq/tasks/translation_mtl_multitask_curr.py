@@ -18,28 +18,20 @@ from fairseq.data import (
     iterators,
     FairseqDataset,
     Dictionary,
-    ConcatDataset,
     data_utils,
     RoundRobinZipDatasets,
-    TokenBlockDataset,
-    indexed_dataset,
 )
-from fairseq.models.transformer_mlm import TransformerMlmModel 
-from fairseq.data.language_pair_langid_dataset import LanguagePairLangidDataset
-from fairseq.data.masked_seq_dataset import MaskedSeqDataset
-from fairseq.data.sort_dataset import SortDataset
-from fairseq.data.noising_dataset import DaeDataset
-from fairseq.criterions.mlm_loss import MlmLoss
 from . import FairseqTask, register_task
 
-from .translation_mtl_curr import (
-    load_langpair_langid_ols_dataset,
-    get_sample_prob,
+from fairseq.models.transformer_mlm import TransformerMlmModel 
+from fairseq.criterions.mlm_loss import MlmLoss
+from fairseq.data.language_pair_langid_dataset import LanguagePairLangidDataset
+from fairseq.data.sort_dataset import SortDataset
+from fairseq.data.langpair_dataset_loader import (
+    LangpairDatasetLoader,
+    MonoDatasetLoader,
     get_size_ratio,
-)
-from .translation_mtl_multitask import (
-    load_mlm_dataset,
-    load_dae_dataset,
+    get_sample_prob
 )
 
 
@@ -52,14 +44,6 @@ def _lang_token_index(dic: Dictionary, lang: str):
     idx = dic.index(_lang_token(lang))
     assert idx != dic.unk_index, \
         'cannot find language token for lang {}'.format(lang)
-    return idx
-
-
-def _mask_index(dic: Dictionary, allow_use_unk=False):
-    idx = dic.index("<mask>")
-    if not allow_use_unk:
-        assert idx != dic.unk_index, \
-            'cannot find special token <mask>'
     return idx
 
 
@@ -86,8 +70,6 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         """Add task-specific arguments to the parser."""
         # fmt: off
         parser.add_argument('data', metavar='DIR', help='path to data directory')
-        parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
-        parser.add_argument('--data-mono', metavar='DIR', default=None, help='path to mono data directory')
         parser.add_argument('--lang-pairs', default=None, metavar='PAIRS',
                             help='comma-separated list of language pairs: en-de,en-fr,de-fr')
         parser.add_argument('-s', '--source-lang', default=None, metavar='SRC',
@@ -114,6 +96,10 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
                                  'language token. (src/tgt) default to be target lan_id')
         parser.add_argument('--decoder-langtok', action='store_true',
                             help='replace beginning-of-sentence in target sentence with target language token')
+        
+        # BT / mono data
+        parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
+        parser.add_argument('--data-mono', metavar='DIR', default=None, help='path to mono data directory')
         
         # MLM
         parser.add_argument('--multitask-mlm', action='store_true',
@@ -183,13 +169,14 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         self.criterions = {}
         self.langs_mlm = sorted(list(set(args.lang_mlm.split(",")))) if args.lang_mlm is not None else []
         self.langs_dae = sorted(list(set(args.lang_dae.split(",")))) if args.lang_dae is not None else []
+        self.langs_mono = sorted(list(set(self.langs_mlm + self.langs_dae)))
         self.multitask_mlm = args.multitask_mlm
         self.multitask_dae = args.multitask_dae
 
         self.data_lengths = None
         self.dataset_to_epoch_iter = {}
-        self.mlm_alpha = self.args.mlm_alpha if self.multitask_mlm else 0.
-        self.dae_alpha = self.args.dae_alpha if self.multitask_dae else 0.
+        self.mlm_alpha = float(self.args.mlm_alpha) if self.multitask_mlm else 0.
+        self.dae_alpha = float(self.args.dae_alpha) if self.multitask_dae else 0.
 
     @classmethod
     def setup_task(cls, args, **kwargs):
@@ -276,7 +263,10 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         """
         
         # set multitask weights for current epoch
-        self.set_multitask_alpha(epoch)
+        if 'mlm' in dataset.datasets or 'dae' in dataset.datasets:
+            self.set_multitask_alpha(epoch)
+            print("| [multitask] epoch {:03d}, alpha_mlm: {}, alpha_dae: {}".format(
+                epoch, self.mlm_alpha, self.dae_alpha))
         
         if self.args.language_sample_temperature == 1. \
             and self.args.language_temperature_scheduler == "static" \
@@ -289,7 +279,10 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         # set epoch for online resampling
         if isinstance(dataset, RoundRobinZipDatasets):
             for kk, vv in dataset.datasets.items():
-                dataset.datasets[kk] = self.set_dataset_epoch(vv, seed=seed, epoch=epoch)
+                if "translation" in kk:
+                    dataset.datasets[kk] = self.set_dataset_epoch(vv, seed=seed, epoch=epoch)
+                else:
+                    dataset.datasets[kk].set_epoch(epoch)
             dataset.set_epoch(epoch)
         else:
             dataset = self.set_dataset_epoch(dataset, seed=seed, epoch=epoch)
@@ -298,6 +291,15 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         with data_utils.numpy_seed(seed):
             indices = dataset.ordered_indices()
 
+        """
+        print("\n[debug][task:iterator]=======================")
+        print("indices:        {}".format(indices))
+        for i in indices:
+            print("sample #{:03d}: {}".format(i, dataset.size(i)))
+        print("max_position:   {}".format(max_positions))
+        print("[debug][task:iterator]=======================")
+        """
+        
         # filter examples that are too large
         indices = data_utils.filter_by_size(
             indices, dataset.size, max_positions, raise_exception=(not ignore_invalid_inputs),
@@ -334,15 +336,26 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         assert len(paths) > 0
         data_path = paths[epoch % len(paths)]
 
+        bt_data_path = None
+        if self.args.data_bt is not None:
+            paths_bt = self.args.data_bt.split(':')
+            bt_data_path = paths_bt[epoch % len(paths_bt)]
+
         language_sample_temperature = getattr(self.args, "min_language_sample_temperature", 1.0)
         if self.args.language_temperature_scheduler == "static":
             language_sample_temperature = self.args.language_sample_temperature
-        resample = not (language_sample_temperature == 1.0 and self.args.language_temperature_scheduler == "static")
+        resample = language_sample_temperature != 1.0 or self.args.language_temperature_scheduler != "static"
         is_train = (split == self.args.train_subset)
 
-        dataset_mt, self.data_lengths = load_langpair_langid_ols_dataset(
+        from fairseq import meters
+        load_timer = meters.StopwatchMeter()
+        load_timer.start()
+
+        # parallel data
+        dataset_loader = LangpairDatasetLoader(
             data_path, split, self.lang_pairs, self.src_dict, self.tgt_dict,
-            combine=combine, dataset_impl=self.args.dataset_impl,
+            combine=combine, 
+            dataset_impl=self.args.dataset_impl,
             upsample_primary=self.args.upsample_primary,
             left_pad_source=self.args.left_pad_source,
             left_pad_target=self.args.left_pad_target,
@@ -355,37 +368,47 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             resample=(resample and is_train),
             language_sample_temperature=language_sample_temperature,
             language_upsample_max=self.args.language_upsample_max,
-        )
+            bt_data_path=bt_data_path,
+            is_train=is_train
+        ) 
+        dataset_mt, data_lengths = dataset_loader.load_all_langpair_dataset()
+        self.data_lengths = data_lengths if is_train else self.data_lengths
         all_datasets = [("translation", dataset_mt)]
 
-        # mono data for mlm
-        if self.multitask_mlm:
+        # mono data
+        mono_dataset_loader = None
+        if is_train and (self.multitask_mlm or self.multitask_dae):
             paths_mono = self.args.data_mono.split(':') if self.args.data_mono is not None else paths
             assert len(paths_mono) > 0
             data_mono_path = paths_mono[epoch % len(paths_mono)]
-            dataset_mlm = load_mlm_dataset(
-                data_mono_path, split, self.langs_mlm, self.src_dict,
-                combine=combine, dataset_impl=self.args.dataset_impl,
-                tokens_per_sample=self.args.tokens_per_sample,
-                masking_ratio=self.args.mlm_masking_ratio,
-                masking_prob=self.args.mlm_masking_prob,
-                random_token_prob=self.args.mlm_random_token_prob,
-                static_noising=self.args.static_noising
-            )
-            all_datasets.append(("mlm", dataset_mlm))
-
-        if self.multitask_dae:
-            paths_mono = self.args.data_mono.split(':') if self.args.data_mono is not None else paths
-            assert len(paths_mono) > 0
-            data_mono_path = paths_mono[epoch % len(paths_mono)] 
-            bpe_cont_marker_map = {"sentencepiece": "sentencepiece", "bpe": "@@"}
-            dataset_dae = load_dae_dataset(
-                data_mono_path, split, self.langs_dae, self.tgt_dict,
-                combine=combine, dataset_impl=self.args.dataset_impl,
+            mono_dataset_loader = MonoDatasetLoader(
+                data_mono_path, split, self.langs_mono, self.src_dict,
+                combine=combine, 
+                dataset_impl=self.args.dataset_impl,
                 left_pad_source=self.args.left_pad_source,
                 left_pad_target=self.args.left_pad_target,
                 max_source_positions=self.args.max_source_positions,
                 max_target_positions=self.args.max_target_positions,
+                static_noising=self.args.static_noising
+            )
+
+        # mono data for mlm
+        if self.multitask_mlm and is_train:
+            mono_dataset_loader.set_mlm_hparams(
+                src_dict=self.src_dict,
+                tokens_per_sample=self.args.tokens_per_sample,
+                masking_ratio=self.args.mlm_masking_ratio,
+                masking_prob=self.args.mlm_masking_prob,
+                random_token_prob=self.args.mlm_random_token_prob,
+            )
+            dataset_mlm = mono_dataset_loader.load_mlm_dataset(data_mono_path, self.langs_mlm)
+            all_datasets.append(("mlm", dataset_mlm))
+
+        # mono data for dae
+        if self.multitask_dae and is_train:
+            bpe_cont_marker_map = {"sentencepiece": "sentencepiece", "bpe": "@@"}
+            mono_dataset_loader.set_dae_hparams(
+                src_dict=self.tgt_dict,
                 max_word_shuffle_distance=self.args.dae_max_shuffle_distance,
                 word_dropout_prob=self.args.dae_dropout_prob,
                 word_blanking_prob=self.args.dae_blanking_prob,
@@ -393,13 +416,16 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
                 bpe_cont_marker=bpe_cont_marker_map.get(self.args.dae_bpe_cont_marker),
                 append_langid_encoder=self.args.encoder_langtok is not None,
                 append_langid_decoder=self.args.decoder_langtok,
-                static_noising=self.args.static_noising,
             )
+            dataset_dae = mono_dataset_loader.load_dae_dataset(data_mono_path, self.langs_dae)
             all_datasets.append(("dae", dataset_dae))
 
         self.datasets[split] = RoundRobinZipDatasets(
             OrderedDict(all_datasets), 
             eval_key=None if self.training else "translation")
+        
+        load_timer.stop()
+        print('| loading dataset took total {} seconds'.format(load_timer.sum))
 
     def build_dataset_for_inference(self, src_tokens, src_lengths):
         src_langs = [self.args.source_lang] * len(src_lengths)
@@ -447,7 +473,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         agg_loss, agg_sample_size, agg_logging_output = 0., 0., {}
 
         """
-        print("\n[debug][task:data]=======================")
+        print("\n[debug][task:mt-data]=======================")
         print("sample['translation']: {}".format(sample['translation'].keys()))
         print("sample['translation']['net_input']: {}".format(sample['translation']['net_input'].keys()))
         for s in sample['translation']['net_input']['src_tokens']:
@@ -455,7 +481,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         print("\ntarget:")
         for s in sample['translation']['target']:
             print(self.src_dict.string(s))
-        print("[debug][task:data]==========================")
+        print("[debug][task:mt-data]==========================")
         """
 
         # seq2seq for MT
@@ -476,7 +502,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         """
 
         """
-        print("\n[debug][task:data]=======================")
+        print("\n[debug][task:mlm-data]=======================")
         print("sample['mlm']: {}".format(sample['mlm'].keys()))
         print("sample['mlm']['net_input']: {}".format(sample['mlm']['net_input'].keys()))
         for i, s in enumerate(sample['mlm']['net_input']['src_tokens']):
@@ -484,7 +510,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             # print('truth  :', self.src_dict.string(sample['mlm']['truth'][i]))
             print('\nmasked :', self.src_dict.string(s))
             print('\npadded :', self.src_dict.string(sample['mlm']['target'][i]))
-        print("[debug][task:data]==========================")
+        print("[debug][task:mlm-data]==========================")
         """
 
         # mlm
@@ -500,14 +526,14 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             agg_logging_output['mlm'] = logging_output
 
         """
-        print("\n[debug][task:data]=======================")
+        print("\n[debug][task:dae-data]=======================")
         print("sample['dae']: {}".format(sample['dae'].keys()))
         print("sample['dae']['net_input']: {}".format(sample['dae']['net_input'].keys()))
         for i, s in enumerate(sample['dae']['net_input']['src_tokens']):
             print('\n' + '-' * 30)
             print('noising   :', self.src_dict.string(s))
             print('\noriginal:', self.src_dict.string(sample['dae']['target'][i]))
-        print("[debug][task:data]==========================")
+        print("[debug][task:dae-data]==========================")
         """
 
         # dae
@@ -597,6 +623,21 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             return t + self.args.min_language_sample_temperature
         raise NotImplementedError
 
+    def get_resampling_size_ratio(self, epoch):
+        new_temp = self.get_sampling_temperature(epoch)
+        sample_probs = get_sample_prob(self.data_lengths, new_temp)
+        size_ratios = get_size_ratio(
+            sample_probs, self.data_lengths, 
+            language_upsample_max=self.args.language_upsample_max)
+        print("| [resample]  epoch {:03d}, sampling temperature: T = {}".format(epoch, new_temp))
+        print("| [resample]  epoch {:03d}, sampling probability by language: {}".format(
+            epoch, ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
+            for _i, _lang in enumerate(self.lang_pairs)])))
+        print("| [resample]  epoch {:03d}, up/down sampling ratio by language: {}".format(
+            epoch, ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
+            for _i, _lang in enumerate(self.lang_pairs)])))
+        return size_ratios
+
     def set_dataset_epoch(self, dataset, seed=1, epoch=0):
         """
         set epoch for dataset resampling
@@ -606,20 +647,8 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         # has to do so for online resampling
         if epoch > 0 and self.args.language_temperature_scheduler != "static" and \
             epoch <= self.args.language_sample_warmup_epochs:
-            new_temp = self.get_sampling_temperature(epoch)
-            sample_probs = get_sample_prob(self.data_lengths, new_temp)
-            size_ratios = get_size_ratio(
-                sample_probs, self.data_lengths, 
-                language_upsample_max=self.args.language_upsample_max)
-            print("| sampling temperature: T = {} @ epoch {}".format(new_temp, epoch))
-            print("| sampling probability by language: {}".format(
-                ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
-                for _i, _lang in enumerate(self.lang_pairs)])))
-            print("| up/down sampling ratio by language: {}".format(
-                ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
-                for _i, _lang in enumerate(self.lang_pairs)])))
-            
             # update epoch and size ratios
+            size_ratios = self.get_resampling_size_ratio(epoch)
             dataset.set_epoch(epoch, size_ratios=size_ratios)
 
             # reset sort order
