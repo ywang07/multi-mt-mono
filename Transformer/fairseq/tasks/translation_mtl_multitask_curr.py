@@ -172,6 +172,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         self.langs_mono = sorted(list(set(self.langs_mlm + self.langs_dae)))
         self.multitask_mlm = args.multitask_mlm
         self.multitask_dae = args.multitask_dae
+        self.use_bt = False
 
         self.data_lengths = None
         self.dataset_to_epoch_iter = {}
@@ -268,6 +269,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             print("| [multitask] epoch {:03d}, alpha_mlm: {}, alpha_dae: {}".format(
                 epoch, self.mlm_alpha, self.dae_alpha))
         
+        # only rebuild iterator when online resampling meeded
         if self.args.language_sample_temperature == 1. \
             and self.args.language_temperature_scheduler == "static" \
             and dataset in self.dataset_to_epoch_iter:
@@ -291,15 +293,6 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         with data_utils.numpy_seed(seed):
             indices = dataset.ordered_indices()
 
-        """
-        print("\n[debug][task:iterator]=======================")
-        print("indices:        {}".format(indices))
-        for i in indices:
-            print("sample #{:03d}: {}".format(i, dataset.size(i)))
-        print("max_position:   {}".format(max_positions))
-        print("[debug][task:iterator]=======================")
-        """
-        
         # filter examples that are too large
         indices = data_utils.filter_by_size(
             indices, dataset.size, max_positions, raise_exception=(not ignore_invalid_inputs),
@@ -371,9 +364,18 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             bt_data_path=bt_data_path,
             is_train=is_train
         ) 
+        
         dataset_mt, data_lengths = dataset_loader.load_all_langpair_dataset()
         self.data_lengths = data_lengths if is_train else self.data_lengths
         all_datasets = [("translation", dataset_mt)]
+        """
+        dataset_mt, data_lengths = dataset_loader.load_bitext_dataset()
+        self.data_lengths = data_lengths if is_train else self.data_lengths
+        all_datasets = [("translation", dataset_mt)]
+        if bt_data_path is not None and is_train:
+            dataset_bt = dataset_loader.load_bt_dataset()
+            all_datasets.append(("translation_bt", dataset_bt))
+        """
 
         # mono data
         mono_dataset_loader = None
@@ -473,82 +475,100 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         agg_loss, agg_sample_size, agg_logging_output = 0., 0., {}
 
         """
-        print("\n[debug][task:mt-data]=======================")
-        print("sample['translation']: {}".format(sample['translation'].keys()))
-        print("sample['translation']['net_input']: {}".format(sample['translation']['net_input'].keys()))
-        for s in sample['translation']['net_input']['src_tokens']:
-            print(self.src_dict.string(s))
-        print("\ntarget:")
-        for s in sample['translation']['target']:
-            print(self.src_dict.string(s))
-        print("[debug][task:mt-data]==========================")
+        torch.set_printoptions(profile="full")
+        print("[debug] gpu_id={}, mt : {} ({}), mlm: {} ({}), dae: {} ({})".format(
+            self.args.distributed_rank,
+            sample['translation']['net_input']['src_tokens'].size(), sample['translation']['net_input']['src_tokens'].numel(),
+            sample['mlm']['net_input']['src_tokens'].size(), sample['mlm']['net_input']['src_tokens'].numel(),
+            sample['dae']['net_input']['src_tokens'].size(), sample['dae']['net_input']['src_tokens'].numel()),
+            flush=True, force=True)
+        
+        print("\n[debug] gpu_id={}, sample['dae']: {}".format(
+            self.args.distributed_rank, sample['dae']['net_input']['src_tokens']),
+            flush=True, force=True)
         """
 
-        # seq2seq for MT
-        loss_seq2seq, sample_size, logging_output = self.criterions['seq2seq'](
-            model.models['seq2seq'], sample['translation'])
-        if ignore_grad:
-            loss_seq2seq *= 0
-        optimizer.backward(loss_seq2seq)
-        agg_loss += loss_seq2seq.detach().item()
-        agg_sample_size += sample_size
-        agg_logging_output['translation'] = logging_output
-
-        """
-        print("\n[debug][task:train]==========================")
-        print("dae_alpha: {}".format(self.dae_alpha))
-        print("mlm_alpha: {}".format(self.mlm_alpha))
-        print("[debug][task:train]==========================")
-        """
-
-        """
-        print("\n[debug][task:mlm-data]=======================")
-        print("sample['mlm']: {}".format(sample['mlm'].keys()))
-        print("sample['mlm']['net_input']: {}".format(sample['mlm']['net_input'].keys()))
-        for i, s in enumerate(sample['mlm']['net_input']['src_tokens']):
-            print('\n' + '-' * 30)
-            # print('truth  :', self.src_dict.string(sample['mlm']['truth'][i]))
-            print('\nmasked :', self.src_dict.string(s))
-            print('\npadded :', self.src_dict.string(sample['mlm']['target'][i]))
-        print("[debug][task:mlm-data]==========================")
-        """
-
-        # mlm
-        if self.multitask_mlm:
-            loss_mlm, sample_size_mlm, logging_output = self.criterions['mlm'](
-                model.models['mlm'], sample['mlm'])
+        try:
+            # seq2seq for MT
+            loss_seq2seq, sample_size, logging_output = self.criterions['seq2seq'](
+                model.models['seq2seq'], sample['translation'])
             if ignore_grad:
-                loss_mlm *= 0
-            loss_mlm *= self.mlm_alpha
-            optimizer.backward(loss_mlm)
-            agg_loss += loss_mlm.detach().item()
-            agg_sample_size += sample_size_mlm
-            agg_logging_output['mlm'] = logging_output
+                loss_seq2seq *= 0
+            optimizer.backward(loss_seq2seq)
+            agg_loss += loss_seq2seq.detach().item()
+            agg_sample_size += sample_size
+            agg_logging_output['translation'] = logging_output
 
-        """
-        print("\n[debug][task:dae-data]=======================")
-        print("sample['dae']: {}".format(sample['dae'].keys()))
-        print("sample['dae']['net_input']: {}".format(sample['dae']['net_input'].keys()))
-        for i, s in enumerate(sample['dae']['net_input']['src_tokens']):
-            print('\n' + '-' * 30)
-            print('noising   :', self.src_dict.string(s))
-            print('\noriginal:', self.src_dict.string(sample['dae']['target'][i]))
-        print("[debug][task:dae-data]==========================")
-        """
+            # mlm
+            if self.multitask_mlm:
+                loss_mlm, sample_size_mlm, logging_output = self.criterions['mlm'](
+                    model.models['mlm'], sample['mlm'])
+                if ignore_grad:
+                    loss_mlm *= 0
+                loss_mlm *= self.mlm_alpha
+                optimizer.backward(loss_mlm)
+                agg_loss += loss_mlm.detach().item()
+                agg_sample_size += sample_size_mlm
+                agg_logging_output['mlm'] = logging_output
 
-        # dae
-        if self.multitask_dae:
-            loss_dae, sample_size_dae, logging_output = self.criterions['seq2seq'](
-                model.models['seq2seq'], sample['dae'])
-            if ignore_grad:
-                loss_dae *= 0
-            loss_dae *= self.dae_alpha
-            optimizer.backward(loss_dae)
-            agg_loss += loss_dae.detach().item()
-            agg_sample_size += sample_size_dae
-            agg_logging_output['dae'] = logging_output
+            # dae
+            if self.multitask_dae:
+                loss_dae, sample_size_dae, logging_output = self.criterions['seq2seq'](
+                    model.models['seq2seq'], sample['dae'])
+                if ignore_grad:
+                    loss_dae *= 0
+                loss_dae *= self.dae_alpha
+                optimizer.backward(loss_dae)
+                agg_loss += loss_dae.detach().item()
+                agg_sample_size += sample_size_dae
+                agg_logging_output['dae'] = logging_output
+
+            """
+            print("[debug] gpu_id: {}, loss_mt: {}, loss_mlm: {}, loss_dae: {}".format(
+                self.args.distributed_rank, loss_seq2seq, loss_mlm, loss_dae), flush=True, force=True)
+            """
+            
+        except RuntimeError as e:
+            print("| WARNING: exception: {} on gpu-{}, skipping batch: [mt] {}, [mlm] {}, [dae] {}. logging_output={}".format(
+                    e, self.args.distributed_rank, 
+                    sample['translation']['net_input']['src_tokens'].size(),
+                    sample['mlm']['net_input']['src_tokens'].size() if self.multitask_mlm else 'None',
+                    sample['dae']['net_input']['src_tokens'].size() if self.multitask_dae else 'None',
+                    agg_logging_output), flush=True, force=True)
+
+            """
+            torch.set_printoptions(profile="full")
+            print("[debug] gpu_id: {}, samples: \n\t{}".format(
+                self.args.distributed_rank, 
+                "\n\t".join(["{}: {}".format(kk, vv) for kk, vv in sample.items()])), flush=True, force=True)
+            
+            for i, s in enumerate(sample['translation']['net_input']['src_tokens']):
+                print('[debug] [mt]  gpu{}-#{} src     : {}\n[mt]  gpu{}-#{} tgt     : {}'.format(
+                    self.args.distributed_rank, i, self.src_dict.string(s),
+                    self.args.distributed_rank, i, self.src_dict.string(sample['translation']['target'][i])), flush=True, force=True)
+            
+            for i, s in enumerate(sample['mlm']['net_input']['src_tokens']):
+                print('[debug] [mlm] gpu{}-#{} masked  : {}\n[mlm] gpu{}-#{} padded  : {}'.format(
+                    self.args.distributed_rank, i, self.src_dict.string(s, ),
+                    self.args.distributed_rank, i, self.src_dict.string(sample['mlm']['target'][i])), flush=True, force=True)
+
+            for i, s in enumerate(sample['dae']['net_input']['src_tokens']):
+                print('[debug] [dae] gpu{}-#{} noised  : {}\n[dae] gpu{}-#{} orig    : {}'.format(
+                    self.args.distributed_rank, i, self.src_dict.string(s),
+                    self.args.distributed_rank, i, self.src_dict.string(sample['dae']['target'][i])), flush=True, force=True)
+            
+            print("[debug] gpu_id: {}, agg_logging_output: {}".format(
+                self.args.distributed_rank, agg_logging_output), flush=True, force=True)
+            print("[debug] gpu_id: {}, loss_mt:  {}".format(
+                self.args.distributed_rank, loss_seq2seq), flush=True, force=True)
+            print("[debug] gpu_id: {}, loss_mlm: {}".format(
+                self.args.distributed_rank, loss_mlm), flush=True, force=True)
+            print("[debug] gpu_id: {}, loss_dae: {}".format(
+                self.args.distributed_rank, loss_dae), flush=True, force=True)
+            """
 
         return agg_loss, agg_sample_size, agg_logging_output
+
 
     def valid_step(self, sample, model, criterion):
         model.eval()
@@ -568,7 +588,14 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         return criterion.__class__.grad_denom(sample_sizes)
 
     def aggregate_logging_outputs(self, logging_outputs, criterion):
-        logging_output_keys = logging_outputs[0].keys()
+        logging_output_keys = []
+        for _logging_output in logging_outputs:
+            logging_output_keys = _logging_output.keys()
+            if len(logging_output_keys) > 0:
+                break
+        
+        if len(logging_output_keys) == 0:
+            return {}
 
         agg_logging_outputs = {
             key: self.criterions[_get_criterion_key(key)].__class__.aggregate_logging_outputs(
