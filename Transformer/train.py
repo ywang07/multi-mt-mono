@@ -118,10 +118,14 @@ def main(args, init_distributed=False):
             # sharded data: get train iterator for next epoch
             epoch_itr = trainer.get_train_iterator(epoch_itr.epoch)
         """
+        
+        data_mono = getattr(args, 'data_mono', '') or ''
+        data_bt = getattr(args, 'data_bt', '') or ''
+        load_dataset = ':' in getattr(args, 'data', '') or ':' in data_mono or ':' in data_bt
         epoch_itr = trainer.get_train_iterator(
             epoch_itr.epoch,
             # sharded data: get train iterator for next epoch
-            load_dataset=(':' in getattr(args, 'data', ''))
+            load_dataset=load_dataset
         )
     train_meter.stop()
     print('| done training in {:.1f} seconds'.format(train_meter.sum))
