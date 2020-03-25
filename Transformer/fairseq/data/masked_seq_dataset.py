@@ -304,11 +304,11 @@ class MaskedSeqDataset(FairseqDataset):
         on this order.
         """
         if self.shuffle:
-            return np.random.permutation(len(self))
+            order = [np.random.permutation(len(self))]
         else:
             order = [np.arange(len(self))]
-            order.append(self.sizes)
-            return np.lexsort(order)
+        order.append(self.sizes)
+        return np.lexsort(order)
 
     @property
     def supports_prefetch(self):
