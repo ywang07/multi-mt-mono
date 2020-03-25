@@ -275,7 +275,7 @@ class Trainer(object):
                     # to stdout, which is buffered, which in many case is not
                     # printed out if another exception happens
                     # print(msg)
-                    print(msg, file=sys.stderr)
+                    print(msg, file=sys.stderr, force=True, flush=True)
                     if raise_oom:
                         raise ValueError(msg)
                     ooms += 1
@@ -321,6 +321,10 @@ class Trainer(object):
         logging_output = self.task.aggregate_logging_outputs(
             logging_outputs, self.criterion
         )
+        if len(logging_output) == 0:
+            print('| WARNING: batch skipped in all workers, skipping update')
+            self.zero_grad()
+            return None
         sample_size = self.task.grad_denom(sample_sizes, self.criterion)
 
         if not all(k in logging_output for k in ['ntokens', 'nsentences']):
