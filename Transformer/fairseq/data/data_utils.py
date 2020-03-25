@@ -185,6 +185,10 @@ def batch_by_size(
                 bsz_mult * (len(batch) // bsz_mult),
                 len(batch) % bsz_mult,
             )
+            # bug fixed: avoid extreme case where an extremely long seq is added at last
+            # which would result in an unreasonably large batch that causes OOM
+            if mod_len == len(batch):
+                mod_len -= 1
             yield batch[:mod_len]
             batch = batch[mod_len:]
             sample_lens = sample_lens[mod_len:]
