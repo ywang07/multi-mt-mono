@@ -9,7 +9,8 @@ import numpy as np
 import torch
 
 from . import data_utils, FairseqDataset
-from .noising import WordDropout, WordNoising, WordShuffle, UnsupervisedMTNoising
+from .noising import WordDropout, WordNoising, WordShuffle
+from .masking import TextInfilling, TokenTextInfilling
 from .language_pair_dataset import collate
 
 
@@ -38,6 +39,8 @@ class DaeDataset(FairseqDataset):
         max_word_shuffle_distance=3,
         word_dropout_prob=0.1,
         word_blanking_prob=0.1,
+        text_infilling_ratio=0.2,
+        text_infilling_lambda=3,
         bpe_cont_marker=None,
         bpe_end_marker=None,
         append_langid_encoder=False,
@@ -75,15 +78,27 @@ class DaeDataset(FairseqDataset):
         self.max_word_shuffle_distance = max_word_shuffle_distance
         self.word_dropout_prob = word_dropout_prob
         self.word_blanking_prob = word_blanking_prob
+        self.text_infilling_ratio = text_infilling_ratio
+        self.text_infilling_lambda = text_infilling_lambda
+
         self.word_dropout = WordDropout(
             dictionary=src_dict,
             bpe_cont_marker=bpe_cont_marker,
-            bpe_end_marker=bpe_end_marker
+            bpe_end_marker=bpe_end_marker,
         )
         self.word_shuffle = WordShuffle(
             dictionary=src_dict,
+            default_max_shuffle_distance=self.max_word_shuffle_distance,
             bpe_cont_marker=bpe_cont_marker,
             bpe_end_marker=bpe_end_marker,
+        )
+        self.text_infilling = TextInfilling(
+            dictionary=src_dict,
+            mask_idx=self.mask_idx,
+            masking_ratio=text_infilling_ratio,
+            span_len_lambda=text_infilling_lambda,
+            bpe_cont_marker=bpe_cont_marker,
+            bpe_end_marker=bpe_end_marker
         )
     
     def __getitem__(self, index):
@@ -93,13 +108,11 @@ class DaeDataset(FairseqDataset):
         lang_id = _lang_token_index(self.src_dict, src_lang)
 
         # add noise
-        src_item_t = torch.t(src_item.unsqueeze(0))
         if self.static_noising:
             with data_utils.numpy_seed(self.seed + index):
-                noisy_src_item, noisy_src_lengths = self.noising(src_item_t, src_lengths)
+                noisy_src_item, noisy_src_lengths = self.noising(src_item, src_lengths)
         else:
-            noisy_src_item, noisy_src_lengths = self.noising(src_item_t, src_lengths)
-        noisy_src_item = noisy_src_item.squeeze()
+            noisy_src_item, noisy_src_lengths = self.noising(src_item, src_lengths)
 
         if self.remove_eos_from_source:
             eos = self.src_dict.eos()
@@ -119,19 +132,31 @@ class DaeDataset(FairseqDataset):
         }
     
     def noising(self, x, lengths):
-        # 1. Word Shuffle
+        # Word Shuffle
         noisy_src_tokens, noisy_src_lengths = self.word_shuffle.noising(
-            x=x,
+            x=torch.t(x.unsqueeze(0)),
             lengths=lengths,
             max_shuffle_distance=self.max_word_shuffle_distance,
         )
-        # 2. Word Dropout
+
+        # Text Infilling
+        noisy_src_tokens, _, noisy_src_lengths = self.text_infilling.masking(
+            x=noisy_src_tokens.squeeze(),
+            lengths=noisy_src_lengths,
+            masking_ratio=self.text_infilling_ratio,
+            span_len_lambda=self.text_infilling_lambda
+        )
+        noisy_src_tokens = torch.t(torch.LongTensor(noisy_src_tokens).unsqueeze(0))
+        noisy_src_lengths = torch.LongTensor(noisy_src_lengths)
+
+        # Word Dropout
         noisy_src_tokens, noisy_src_lengths = self.word_dropout.noising(
             x=noisy_src_tokens,
             lengths=noisy_src_lengths,
             dropout_prob=self.word_dropout_prob,
         )
-        # 3. Word Blanking (equiv to masking, no replacing yet)
+
+        # Word Blanking (equiv to masking, no replacing yet)
         noisy_src_tokens, noisy_src_lengths = self.word_dropout.noising(
             x=noisy_src_tokens,
             lengths=noisy_src_lengths,
@@ -139,6 +164,7 @@ class DaeDataset(FairseqDataset):
             blank_idx=self.mask_idx,
         )
 
+        noisy_src_tokens = noisy_src_tokens.squeeze()
         return noisy_src_tokens, noisy_src_lengths
 
     def collater(self, samples):
@@ -178,3 +204,21 @@ class DaeDataset(FairseqDataset):
 
     def prefetch(self, indices):
         self.src_dataset.prefetch(indices)
+    
+    def set_epoch(self, epoch, **kwargs):
+        super().set_epoch(epoch, **kwargs)
+
+        if hasattr(self.src_dataset, 'set_epoch'):
+            self.src_dataset.set_epoch(epoch, **kwargs)
+        
+        # reset noising hparams
+        if kwargs.get('word_dropout_prob') is not None:
+            self.word_dropout_prob = kwargs['word_dropout_prob']
+        if kwargs.get('word_blanking_prob') is not None:
+            self.word_dropout_prob = kwargs['word_blanking_prob']
+        if kwargs.get('max_word_shuffle_distance') is not None:
+            self.max_word_shuffle_distance = kwargs['max_word_shuffle_distance']
+        if kwargs.get('text_infilling_ratio') is not None:
+            self.text_infilling_ratio = kwargs['text_infilling_ratio']
+        if kwargs.get('text_infilling_lambda') is not None:
+            self.text_infilling_lambda = kwargs['text_infilling_lambda']
