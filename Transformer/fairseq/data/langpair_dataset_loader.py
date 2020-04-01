@@ -12,7 +12,8 @@ from fairseq.data import (
 from fairseq.data.language_pair_langid_dataset import LanguagePairLangidDataset
 from fairseq.data.resampling_dataset import ResamplingDataset
 from fairseq.data.sort_dataset import SortDataset
-from fairseq.data.masked_seq_dataset import MaskedSeqDataset
+from fairseq.data.masking_dataset import MaskingDataset
+# from fairseq.data.masked_seq_dataset import MaskedSeqDataset
 from fairseq.data.noising_dataset import DaeDataset
 
 
@@ -94,7 +95,7 @@ class LangpairDatasetLoader(object):
         self.language_sample_temperature = language_sample_temperature
         self.bt_data_path = bt_data_path
         self.is_train = is_train
-    
+
     def load_all_langpair_dataset(self):
         # load bt corpus (skip dev)
         bt_dataset = self.load_langpair_langid_dataset(
@@ -113,7 +114,6 @@ class LangpairDatasetLoader(object):
             # bitext + bt
             if bt_dataset is not None:
                 resampled_lang_pair_datasets.append(bt_dataset)
-                dataset_lengths = np.append(dataset_lengths, np.array([len(bt_dataset)], dtype=float))
             dataset = ConcatDataset(resampled_lang_pair_datasets)
 
             # shuffle dataset
@@ -131,12 +131,44 @@ class LangpairDatasetLoader(object):
         # bitext + bt
         if bt_dataset is not None:
             dataset = ConcatDataset([bitext_dataset, bt_dataset])
-            dataset_lengths = np.array([len(bitext_dataset), len(bt_dataset)], dtype=float)
             with data_utils.numpy_seed(self.seed + self.epoch):
                 shuffle = np.random.permutation(len(dataset))
             return SortDataset(dataset, sort_order=[shuffle, dataset.sizes]), None
         # bitext only
         return bitext_dataset, None
+
+    def load_bitext_dataset(self):
+        # with resampling
+        if self.resample and self.is_train:
+            dataset, dataset_lengths = self.load_langpair_resample_dataset(
+                data_path=self.data_path,
+                lang_pairs=self.lang_pairs,
+                is_bt=False
+            )
+
+            # shuffle dataset
+            with data_utils.numpy_seed(self.seed + self.epoch):
+                shuffle = np.random.permutation(len(dataset))
+            # sort primarily by source length, then by shuffle seeds
+            return SortDataset(dataset, sort_order=[shuffle, dataset.sizes]), dataset_lengths
+
+        # no resampling
+        dataset = self.load_langpair_langid_dataset(
+            data_path=self.data_path,
+            lang_pairs=self.lang_pairs,
+            is_bt=False
+        )
+        return dataset, None
+
+    def load_bt_dataset(self):
+        # load bt corpus (skip dev)
+        if (self.bt_data_path is not None and self.is_train):
+            return self.load_langpair_langid_dataset(
+                data_path=self.bt_data_path,
+                lang_pairs=self.lang_pairs,
+                is_bt=True
+            )
+        return None
 
     def load_langpair_langid_dataset(self, data_path, lang_pairs, is_bt=False):
         src_datasets, tgt_datasets = [], []
@@ -264,13 +296,17 @@ class MonoDatasetLoader(object):
         append_langid_decoder=False,
         max_word_shuffle_distance=3, 
         word_dropout_prob=0.1, 
-        word_blanking_prob=0.2, 
+        word_blanking_prob=0.2,
+        text_infilling_ratio=0.,
+        text_infilling_lambda=3.5,
         blank_mask_token=False, 
         bpe_cont_marker="sentencepiece",
-        tokens_per_sample=None,
         masking_ratio=0.15,
         masking_prob=0.8,
         random_token_prob=0.1,
+        word_mask=False,
+        span_mask=False,
+        span_len_lambda=3.5,
     ):
         self.data_path = data_path
         self.split = split
@@ -291,17 +327,50 @@ class MonoDatasetLoader(object):
         self.masking_ratio = masking_ratio
         self.masking_prob = masking_prob
         self.random_token_prob = random_token_prob
-        self.tokens_per_sample = tokens_per_sample or self.max_source_positions
+        self.word_mask = word_mask
+        self.span_mask = span_mask
+        self.span_len_lambda = span_len_lambda
 
         # dae settings
         self.max_word_shuffle_distance = max_word_shuffle_distance
         self.word_dropout_prob = word_dropout_prob
         self.word_blanking_prob = word_blanking_prob
+        self.text_infilling_ratio = text_infilling_ratio
+        self.text_infilling_lambda = text_infilling_lambda
         self.blank_mask_token = blank_mask_token
         self.bpe_cont_marker = bpe_cont_marker
         self.append_langid_encoder = append_langid_encoder
         self.append_langid_decoder = append_langid_decoder
     
+
+    def load_mlm_dataset(self, data_path, langs):
+        datasets, src_langs = [], []
+
+        for lang in langs:
+            datasets, src_langs = self._load_dataset_from_file(
+                lang, data_path, datasets, src_langs, task="mlm")
+
+        if len(datasets) == 1:
+            datasets = datasets[0]
+        else:
+            datasets = ConcatDataset(datasets)
+        
+        return MaskingDataset(
+            datasets, datasets.sizes, self.src_dict,
+            mask_idx=_mask_index(self.src_dict),
+            seed=self.seed,
+            shuffle=True,
+            masking_ratio=self.masking_ratio,
+            masking_prob=self.masking_prob,
+            random_token_prob=self.random_token_prob,
+            bpe_cont_marker=self.bpe_cont_marker if self.word_mask else None,
+            span_mask=self.span_mask,
+            span_len_lambda=self.span_len_lambda,
+            static_noising=self.static_noising
+        )
+
+    """
+    # deprecated
     def load_mlm_dataset(self, data_path, langs):
         datasets, src_langs = [], []
 
@@ -336,6 +405,7 @@ class MonoDatasetLoader(object):
             random_token_prob=self.random_token_prob,
             static_noising=self.static_noising
         )
+    """
 
     def load_dae_dataset(self, data_path, langs):
         datasets, src_langs = [], []
@@ -356,6 +426,8 @@ class MonoDatasetLoader(object):
             max_word_shuffle_distance=self.max_word_shuffle_distance,
             word_dropout_prob=self.word_dropout_prob,
             word_blanking_prob=self.word_blanking_prob,
+            text_infilling_ratio=self.text_infilling_ratio,
+            text_infilling_lambda=self.text_infilling_lambda,
             bpe_cont_marker=self.bpe_cont_marker,
             append_langid_encoder=self.append_langid_encoder,
             append_langid_decoder=self.append_langid_decoder,
@@ -387,18 +459,24 @@ class MonoDatasetLoader(object):
             src_langs += [src] * len(src_datasets[-1])
 
             print('| {path} {split} {task}-{lang} {num} examples'.format(
-                path=data_path, split=split_k, task=task, lang=src, num=len(src_datasets[-1])))
+                path=data_path, split=split_k, task=task.upper(), lang=src, num=len(src_datasets[-1])))
 
             if not self.combine:
                 break
         return src_datasets, src_langs
 
-    def set_mlm_hparams(self, src_dict, tokens_per_sample, masking_ratio, masking_prob, random_token_prob):
+    def set_mlm_hparams(
+        self, src_dict, 
+        masking_ratio, masking_prob, random_token_prob, word_mask,
+        span_mask, span_len_lambda
+    ):
         self.src_dict = src_dict
-        self.tokens_per_sample = tokens_per_sample or self.max_source_positions
         self.masking_ratio = masking_ratio
         self.masking_prob = masking_prob
         self.random_token_prob = random_token_prob
+        self.word_mask = word_mask
+        self.span_mask = span_mask
+        self.span_len_lambda = span_len_lambda
     
     def set_dae_hparams(
         self,
@@ -406,6 +484,8 @@ class MonoDatasetLoader(object):
         max_word_shuffle_distance, 
         word_dropout_prob, 
         word_blanking_prob, 
+        text_infilling_ratio,
+        text_infilling_lambda,
         blank_mask_token, 
         bpe_cont_marker,
         append_langid_encoder, 
@@ -415,6 +495,8 @@ class MonoDatasetLoader(object):
         self.max_word_shuffle_distance = max_word_shuffle_distance
         self.word_dropout_prob = word_dropout_prob
         self.word_blanking_prob = word_blanking_prob
+        self.text_infilling_ratio = text_infilling_ratio
+        self.text_infilling_lambda = text_infilling_lambda
         self.blank_mask_token = blank_mask_token
         self.bpe_cont_marker = bpe_cont_marker
         self.append_langid_encoder = append_langid_encoder
