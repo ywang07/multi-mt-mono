@@ -210,7 +210,7 @@ def add_preprocess_args(parser):
     group.add_argument("--alignfile", metavar="ALIGN", default=None,
                        help="an alignment file (optional)")
     parser.add_argument('--dataset-impl', metavar="FORMAT", help='output dataset implementation',
-                        choices=['raw', 'lazy', 'cached', 'mmap'], default='cached')
+                        choices=['raw', 'lazy', 'cached', 'mmap'], default='mmap')
     group.add_argument("--joined-dictionary", action="store_true",
                        help="Generate joined dictionary")
     group.add_argument("--only-source", action="store_true",
