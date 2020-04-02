@@ -14,6 +14,7 @@ class MaskingScheme(object):
         token_range=None
     ):
         self.dictionary = dictionary
+        self.special_symbols = [self.dictionary.eos(), self.dictionary.unk(), self.dictionary.bos(), self.dictionary.pad()]
         self.mask_idx = mask_idx
         self.pad_idx = dictionary.pad()
         self.token_range = token_range if token_range is not None else (self.dictionary.nspecial, len(self.dictionary))
@@ -22,7 +23,7 @@ class MaskingScheme(object):
         self.bpe_start, self.bpe_end = None, None
         if bpe_cont_marker is not None and bpe_cont_marker == "sentencepiece":
             self.bpe_start = np.array([
-                self.dictionary[i].startswith('\u2581')
+                self.dictionary[i].startswith('\u2581') or i in self.special_symbols
                 for i in range(len(self.dictionary))
             ])
         elif bpe_cont_marker is not None:
@@ -96,17 +97,25 @@ class MaskingScheme(object):
             word_idx: [0, 1, 1, 1, 2, 2, 3]
             word_start_idx: {0: 0, 1: 1, 2: 4, 3: 6, 4: 7}
         """
-        bpe_start = self.bpe_start[x]
+        bpe_start = np.array(self.bpe_start[x])
 
         if len(x) == 1:
             return np.array([0]), {0: 0, 1: 1}
 
-        start_pos = np.argwhere(bpe_start).squeeze()
+        word_idx = bpe_start.cumsum(0) - 1
+        if min(word_idx) < 0:
+            try:
+                print("[WARNING] no spm start in sample: {}, word_idx = {}".format(
+                    self.dictionary.string(x), word_idx), flush=True, force=True)
+            except:
+                print("[WARNING] no spm start in sample: {}, word_idx = {}".format(
+                    self.dictionary.string(x), word_idx), flush=True)
+                word_idx += 1
+        
+        start_pos = np.argwhere(bpe_start).squeeze(1)
         word_start_idx = {i: start_pos[i] for i in range(len(start_pos))}
         word_start_idx[len(start_pos)] = len(x)
 
-        word_idx = bpe_start.cumsum(0)
-        word_idx -= 1 if min(word_idx) > 0 else 0 
         return word_idx, word_start_idx
     
     def _get_bpe_word_idx(self, x):
@@ -247,10 +256,10 @@ class SpanTokenMasking(MaskingScheme):
 
         while len(mask_pos) < mask_num:
             span_len = min(np.random.poisson(lam=span_len_lambda), mask_num)
-            start = np.random.choice(x_len_no_eos-span_len)
+            start = np.random.choice(max(x_len_no_eos-span_len, 1))
             if start in mask_pos:
                 continue
-            for i in range(start, start+span_len):
+            for i in range(start, min(start+span_len, x_len)):
                 if len(mask_pos) >= mask_num:
                     break
                 mask_pos.add(i)
@@ -301,11 +310,11 @@ class TokenTextInfilling(MaskingScheme):
 
         while len(mask) < mask_num:
             span_len = min(np.random.poisson(lam=span_len_lambda), mask_num)
-            start = np.random.choice(x_len_no_eos-span_len)
+            start = np.random.choice(max(x_len_no_eos-span_len, 1))
             if start in mask:
                 continue
             spans.append([start, start])
-            for i in range(start, start+span_len):
+            for i in range(start,  min(start+span_len, x_len)):
                 if len(mask) >= mask_num:
                     break
                 mask.add(i)
@@ -350,19 +359,22 @@ class TextInfilling(MaskingScheme):
         # word-level masking
         word_idx, word_start_idx = self.get_word_idx(x)
         num_words = max(word_idx) + 1
-
         num_words_no_eos = num_words - 1 if x[-1] == self.dictionary.eos() else 0
+
+        if num_words_no_eos == 1:
+            return x, x, lengths
+        
         mask_num = math.ceil(num_words_no_eos * masking_ratio)
         mask = set() 
         spans = []    # list of start/end word idx (end not included)
 
         while len(mask) < mask_num:
             span_len = min(np.random.poisson(lam=span_len_lambda), mask_num)
-            start = np.random.choice(num_words_no_eos-span_len)
+            start = np.random.choice(max(num_words_no_eos-span_len, 1))
             if start in mask:
                 continue
             spans.append([start, start])
-            for i in range(start, start+span_len):
+            for i in range(start, min(start+span_len, num_words)):
                 if len(mask) >= mask_num:
                     break
                 mask.add(i)
