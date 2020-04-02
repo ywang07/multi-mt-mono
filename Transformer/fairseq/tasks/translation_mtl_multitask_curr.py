@@ -106,15 +106,19 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
                             help='use MaskedLM objective together with MT cross-entropy')
         parser.add_argument('--lang-mlm', default=None,
                             help='comma-separated list of languages with mono data: en,de,fr (for MLM)')
-        parser.add_argument('--tokens-per-sample', default=512, type=int,
-                            help='max number of total tokens over all segments per sample for BERT dataset')
         parser.add_argument('--mlm-masking-ratio', default=0.15, type=float,
                             help='masking ratio for MaskedLM')
         parser.add_argument('--mlm-masking-prob', default=0.8, type=float,
                             help='masking ratio for MaskedLM')
         parser.add_argument('--mlm-random-token-prob', default=0.1, type=float,
                             help='masking ratio for MaskedLM')
-        
+        parser.add_argument('--mlm-word-mask', action='store_true',
+                            help='use word-level random masking for MaskedLM')
+        parser.add_argument('--mlm-span-mask', action='store_true',
+                            help='use span masking for MaskedLM')
+        parser.add_argument('--mlm-span-lambda', default=3.5, type=float,
+                            help='lambda of poisson distribution for span length sampling')
+
         # DAE
         parser.add_argument('--multitask-dae', action='store_true',
                             help='use DAE objective together with MT cross-entropy')
@@ -128,6 +132,10 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
                             help='token blanking probability for DAE')
         parser.add_argument('--dae-blanking-with-mask', action='store_true',
                             help='token blanking with <mask> token instead of <unk> for DAE')
+        parser.add_argument('--dae-span-masking-ratio', default=0., type=float,
+                            help='span masking ratio for DAE')
+        parser.add_argument('--dae-span-lambda', default=3.5, type=float,
+                            help='lambda of poisson distribution for span length sampling')
         parser.add_argument('--dae-bpe-cont-marker', default="sentencepiece", type=str,
                             help='word level (if sentencepiece or bpe) or token level (others) noising')       
         parser.add_argument('--static-noising', action='store_true',
@@ -156,10 +164,13 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         parser.add_argument('--mlm-alpha-warmup', default=1, type=float, help='warmup epochs for mlm objective')
         parser.add_argument('--dae-alpha-warmup', default=1, type=float, help='warmup epochs for dae objective')
 
-    def __init__(self, args, src_dict, tgt_dict, training):
+    def __init__(self, args, src_dict, tgt_dict, training, src_token_range=None, tgt_token_range=None):
         super().__init__(args)
         self.src_dict = src_dict
         self.tgt_dict = tgt_dict
+        self.src_token_range = src_token_range
+        self.tgt_token_range = tgt_token_range
+
         self.lang_pairs = args.lang_pairs
         self.eval_lang_pairs = args.lang_pairs
         self.model_lang_pairs = copy.copy(args.lang_pairs)
@@ -181,8 +192,8 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
 
     @classmethod
     def setup_task(cls, args, **kwargs):
-        src_dict, tgt_dict, training = cls.prepare(args, **kwargs)
-        return cls(args, src_dict, tgt_dict, training)
+        src_dict, tgt_dict, training, src_token_range, tgt_token_range = cls.prepare(args, **kwargs)
+        return cls(args, src_dict, tgt_dict, training, src_token_range, tgt_token_range)
 
     @classmethod
     def prepare(cls, args, **kargs):
@@ -223,6 +234,8 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         assert src_dict.pad() == tgt_dict.pad()
         assert src_dict.eos() == tgt_dict.eos()
         assert src_dict.unk() == tgt_dict.unk()
+        src_token_range = ((src_dict.nspecial, len(src_dict)))
+        tgt_token_range = ((tgt_dict.nspecial, len(tgt_dict)))
         src_dict.add_symbol("<mask>")
         tgt_dict.add_symbol("<mask>")
         # add language token to dictionaries
@@ -230,9 +243,9 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             for lang_to_add in sorted_langs:
                 src_dict.add_symbol(_lang_token(lang_to_add))
                 tgt_dict.add_symbol(_lang_token(lang_to_add))
-        print('| [src] dictionary: {} types'.format(len(src_dict)))
-        print('| [tgt] dictionary: {} types'.format(len(tgt_dict)))
-        return src_dict, tgt_dict, training
+        print('| [src] dictionary: {} types, token range: {}'.format(len(src_dict), src_token_range))
+        print('| [tgt] dictionary: {} types, token range: {}'.format(len(tgt_dict), tgt_token_range))
+        return src_dict, tgt_dict, training, src_token_range, tgt_token_range
 
     def build_criterion(self, args):
         """
@@ -364,18 +377,10 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             bt_data_path=bt_data_path,
             is_train=is_train
         ) 
-        
+     
         dataset_mt, data_lengths = dataset_loader.load_all_langpair_dataset()
         self.data_lengths = data_lengths if is_train else self.data_lengths
         all_datasets = [("translation", dataset_mt)]
-        """
-        dataset_mt, data_lengths = dataset_loader.load_bitext_dataset()
-        self.data_lengths = data_lengths if is_train else self.data_lengths
-        all_datasets = [("translation", dataset_mt)]
-        if bt_data_path is not None and is_train:
-            dataset_bt = dataset_loader.load_bt_dataset()
-            all_datasets.append(("translation_bt", dataset_bt))
-        """
 
         # mono data
         mono_dataset_loader = None
@@ -398,10 +403,13 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         if self.multitask_mlm and is_train:
             mono_dataset_loader.set_mlm_hparams(
                 src_dict=self.src_dict,
-                tokens_per_sample=self.args.tokens_per_sample,
+                token_range=self.src_token_range,
                 masking_ratio=self.args.mlm_masking_ratio,
                 masking_prob=self.args.mlm_masking_prob,
                 random_token_prob=self.args.mlm_random_token_prob,
+                word_mask=self.args.mlm_word_mask,
+                span_mask=self.args.mlm_span_mask,
+                span_len_lambda=self.args.mlm_span_lambda,
             )
             dataset_mlm = mono_dataset_loader.load_mlm_dataset(data_mono_path, self.langs_mlm)
             all_datasets.append(("mlm", dataset_mlm))
@@ -411,9 +419,12 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             bpe_cont_marker_map = {"sentencepiece": "sentencepiece", "bpe": "@@"}
             mono_dataset_loader.set_dae_hparams(
                 src_dict=self.tgt_dict,
+                token_range=self.tgt_token_range,
                 max_word_shuffle_distance=self.args.dae_max_shuffle_distance,
                 word_dropout_prob=self.args.dae_dropout_prob,
                 word_blanking_prob=self.args.dae_blanking_prob,
+                text_infilling_ratio=self.args.dae_span_masking_ratio,
+                text_infilling_lambda=self.args.dae_span_lambda,
                 blank_mask_token=self.args.dae_blanking_with_mask,
                 bpe_cont_marker=bpe_cont_marker_map.get(self.args.dae_bpe_cont_marker),
                 append_langid_encoder=self.args.encoder_langtok is not None,
@@ -530,7 +541,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             
         except RuntimeError as e:
             print("| WARNING: exception: {} on gpu-{}, skipping batch: [mt] {}, [mlm] {}, [dae] {}. logging_output={}".format(
-                    e, self.args.distributed_rank, 
+                    e, self.args.distributed_rank,
                     sample['translation']['net_input']['src_tokens'].size(),
                     sample['mlm']['net_input']['src_tokens'].size() if self.multitask_mlm else 'None',
                     sample['dae']['net_input']['src_tokens'].size() if self.multitask_dae else 'None',
