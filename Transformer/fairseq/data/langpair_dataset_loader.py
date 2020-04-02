@@ -291,6 +291,7 @@ class MonoDatasetLoader(object):
         seed=1, 
         epoch=0, 
         static_noising=False,
+        token_range=None,
         is_train=True,
         append_langid_encoder=True,
         append_langid_decoder=False,
@@ -322,6 +323,7 @@ class MonoDatasetLoader(object):
         self.epoch = epoch
         self.static_noising = static_noising
         self.is_train = is_train
+        self.token_range = token_range
 
         # mlm settings
         self.masking_ratio = masking_ratio
@@ -366,7 +368,8 @@ class MonoDatasetLoader(object):
             bpe_cont_marker=self.bpe_cont_marker if self.word_mask else None,
             span_mask=self.span_mask,
             span_len_lambda=self.span_len_lambda,
-            static_noising=self.static_noising
+            static_noising=self.static_noising,
+            token_range=self.token_range
         )
 
     """
@@ -466,11 +469,12 @@ class MonoDatasetLoader(object):
         return src_datasets, src_langs
 
     def set_mlm_hparams(
-        self, src_dict, 
+        self, src_dict, token_range,
         masking_ratio, masking_prob, random_token_prob, word_mask,
         span_mask, span_len_lambda
     ):
         self.src_dict = src_dict
+        self.token_range = token_range
         self.masking_ratio = masking_ratio
         self.masking_prob = masking_prob
         self.random_token_prob = random_token_prob
@@ -481,6 +485,7 @@ class MonoDatasetLoader(object):
     def set_dae_hparams(
         self,
         src_dict,
+        token_range,
         max_word_shuffle_distance, 
         word_dropout_prob, 
         word_blanking_prob, 
@@ -492,6 +497,7 @@ class MonoDatasetLoader(object):
         append_langid_decoder
     ):
         self.src_dict = src_dict
+        self.token_range = token_range
         self.max_word_shuffle_distance = max_word_shuffle_distance
         self.word_dropout_prob = word_dropout_prob
         self.word_blanking_prob = word_blanking_prob
