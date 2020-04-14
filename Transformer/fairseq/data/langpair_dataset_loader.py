@@ -362,7 +362,7 @@ class MonoDatasetLoader(object):
         if self.max_dataset_length > 0:
             size_ratio = min(float(self.max_dataset_length) / len(mlm_dataset), 1.)
             print("|  [resample] downsample MLM-mono data with ratio: {}".format(size_ratio))
-            return ResamplingDataset(
+            mlm_dataset = ResamplingDataset(
                 mlm_dataset,
                 size_ratio=size_ratio,
                 seed=self.seed,
