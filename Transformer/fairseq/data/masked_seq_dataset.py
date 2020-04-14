@@ -71,7 +71,7 @@ class MaskedSeqDataset(FairseqDataset):
             masking_ratio: float = 0.15,
             masking_prob: float = 0.8,
             random_token_prob: float = 0.1,
-            static_noising: bool = True,
+            static_noising: bool = False,
     ):
         # Make sure the input datasets are the ones supported
         assert (

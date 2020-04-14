@@ -14,7 +14,7 @@ class MaskingScheme(object):
         token_range=None
     ):
         self.dictionary = dictionary
-        self.special_symbols = [self.dictionary.eos(), self.dictionary.unk(), self.dictionary.bos(), self.dictionary.pad()]
+        self.special_symbols = self.dictionary.special_symbols()
         self.mask_idx = mask_idx
         self.pad_idx = dictionary.pad()
         self.token_range = token_range if token_range is not None else (self.dictionary.nspecial, len(self.dictionary))
@@ -304,6 +304,9 @@ class TokenTextInfilling(MaskingScheme):
 
         x_len = len(x)
         x_len_no_eos = x_len - 1 if x[-1] == self.dictionary.eos() else 0
+        if x_len_no_eos < 2: 
+            return x, x, length
+
         mask_num = math.ceil(x_len_no_eos * masking_ratio)
         mask = set()
         spans = []    # list of start/end token idx (end not included)
@@ -355,6 +358,8 @@ class TextInfilling(MaskingScheme):
         assert span_len_lambda > 0
 
         x_len = len(x)
+        if x_len < 2:
+            return x, x, lengths
 
         # word-level masking
         word_idx, word_start_idx = self.get_word_idx(x)

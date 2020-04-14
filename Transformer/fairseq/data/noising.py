@@ -15,7 +15,7 @@ class WordNoising(object):
     """Generate a noisy version of a sentence, without changing words themselves."""
     def __init__(self, dictionary, bpe_cont_marker="@@", bpe_end_marker=None):
         self.dictionary = dictionary
-        self.special_symbols = [self.dictionary.eos(), self.dictionary.unk(), self.dictionary.bos(), self.dictionary.pad()]
+        self.special_symbols = self.dictionary.special_symbols()
 
         self.bpe_start, self.bpe_end = None, None
         if bpe_cont_marker and bpe_cont_marker == "sentencepiece":

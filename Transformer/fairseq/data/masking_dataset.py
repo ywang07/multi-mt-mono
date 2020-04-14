@@ -172,4 +172,4 @@ class MaskingDataset(FairseqDataset):
         if kwargs.get('masking_ratio') is not None:
             self.masking_ratio = kwargs['masking_ratio']
         if kwargs.get('span_len_lambda') is not None:
-            self.masking_ratio = kwargs['span_len_lambda']
+            self.span_len_lambda = kwargs['span_len_lambda']
