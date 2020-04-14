@@ -73,6 +73,7 @@ class LangpairDatasetLoader(object):
         language_sample_temperature=1.0, 
         bt_data_path=None, 
         is_train=True,
+        downsample_bt=False,
     ):
         self.data_path = data_path
         self.split = split
@@ -95,6 +96,7 @@ class LangpairDatasetLoader(object):
         self.language_sample_temperature = language_sample_temperature
         self.bt_data_path = bt_data_path
         self.is_train = is_train
+        self.downsample_bt = downsample_bt
 
     def load_all_langpair_dataset(self):
         # load bt corpus (skip dev)
@@ -103,6 +105,7 @@ class LangpairDatasetLoader(object):
             lang_pairs=self.lang_pairs,
             is_bt=True
         ) if (self.bt_data_path is not None and self.is_train) else None
+        bt_length = None
 
         # load bitext corpus (with resampling)
         if self.resample and self.is_train:
@@ -113,6 +116,7 @@ class LangpairDatasetLoader(object):
             )
             # bitext + bt
             if bt_dataset is not None:
+                bt_dataset, bt_length = self.load_bt_dataset(bt_dataset, bitext_lengths=sum(dataset_lengths))
                 resampled_lang_pair_datasets.append(bt_dataset)
             dataset = ConcatDataset(resampled_lang_pair_datasets)
 
@@ -120,7 +124,7 @@ class LangpairDatasetLoader(object):
             with data_utils.numpy_seed(self.seed + self.epoch):
                 shuffle = np.random.permutation(len(dataset))
             # sort primarily by source length, then by shuffle seeds
-            return SortDataset(dataset, sort_order=[shuffle, dataset.sizes]), dataset_lengths
+            return SortDataset(dataset, sort_order=[shuffle, dataset.sizes]), dataset_lengths, bt_length
 
         # load bitext corpus (no resampling)
         bitext_dataset = self.load_langpair_langid_dataset(
@@ -130,45 +134,27 @@ class LangpairDatasetLoader(object):
         )
         # bitext + bt
         if bt_dataset is not None:
+            bt_dataset, bt_length = self.load_bt_dataset(bt_dataset, bitext_lengths=len(bitext_dataset))
             dataset = ConcatDataset([bitext_dataset, bt_dataset])
             with data_utils.numpy_seed(self.seed + self.epoch):
                 shuffle = np.random.permutation(len(dataset))
-            return SortDataset(dataset, sort_order=[shuffle, dataset.sizes]), None
+            return SortDataset(dataset, sort_order=[shuffle, dataset.sizes]), None, bt_length
         # bitext only
-        return bitext_dataset, None
+        return bitext_dataset, None, bt_length
 
-    def load_bitext_dataset(self):
-        # with resampling
-        if self.resample and self.is_train:
-            dataset, dataset_lengths = self.load_langpair_resample_dataset(
-                data_path=self.data_path,
-                lang_pairs=self.lang_pairs,
-                is_bt=False
+    def load_bt_dataset(self, bt_dataset, bitext_lengths=None):
+        # downsample to match #bitext
+        if self.downsample_bt:
+            size_ratio = min(bitext_lengths / float(len(bt_dataset)), 1.0)
+            print("| [resample]  downsampling BT with ratio: {}".format(size_ratio))
+            bt_dataset = ResamplingDataset(
+                dataset=bt_dataset,
+                replace=False,
+                size_ratio=size_ratio,
+                seed=self.seed,
+                epoch=self.epoch,
             )
-
-            # shuffle dataset
-            with data_utils.numpy_seed(self.seed + self.epoch):
-                shuffle = np.random.permutation(len(dataset))
-            # sort primarily by source length, then by shuffle seeds
-            return SortDataset(dataset, sort_order=[shuffle, dataset.sizes]), dataset_lengths
-
-        # no resampling
-        dataset = self.load_langpair_langid_dataset(
-            data_path=self.data_path,
-            lang_pairs=self.lang_pairs,
-            is_bt=False
-        )
-        return dataset, None
-
-    def load_bt_dataset(self):
-        # load bt corpus (skip dev)
-        if (self.bt_data_path is not None and self.is_train):
-            return self.load_langpair_langid_dataset(
-                data_path=self.bt_data_path,
-                lang_pairs=self.lang_pairs,
-                is_bt=True
-            )
-        return None
+        return bt_dataset, len(bt_dataset)
 
     def load_langpair_langid_dataset(self, data_path, lang_pairs, is_bt=False):
         src_datasets, tgt_datasets = [], []
@@ -308,6 +294,7 @@ class MonoDatasetLoader(object):
         word_mask=False,
         span_mask=False,
         span_len_lambda=3.5,
+        max_dataset_length=-1,
     ):
         self.data_path = data_path
         self.split = split
@@ -324,6 +311,7 @@ class MonoDatasetLoader(object):
         self.static_noising = static_noising
         self.is_train = is_train
         self.token_range = token_range
+        self.max_dataset_length = max_dataset_length
 
         # mlm settings
         self.masking_ratio = masking_ratio
@@ -357,7 +345,7 @@ class MonoDatasetLoader(object):
         else:
             datasets = ConcatDataset(datasets)
         
-        return MaskingDataset(
+        mlm_dataset = MaskingDataset(
             datasets, datasets.sizes, self.src_dict,
             mask_idx=_mask_index(self.src_dict),
             seed=self.seed,
@@ -371,6 +359,17 @@ class MonoDatasetLoader(object):
             static_noising=self.static_noising,
             token_range=self.token_range
         )
+        if self.max_dataset_length > 0:
+            size_ratio = min(float(self.max_dataset_length) / len(mlm_dataset), 1.)
+            print("|  [resample] downsample MLM-mono data with ratio: {}".format(size_ratio))
+            return ResamplingDataset(
+                mlm_dataset,
+                size_ratio=size_ratio,
+                seed=self.seed,
+                epoch=self.epoch,
+                replace=False
+            )
+        return mlm_dataset
 
     """
     # deprecated
@@ -422,7 +421,7 @@ class MonoDatasetLoader(object):
         else:
             dataset = ConcatDataset(datasets)
         
-        return DaeDataset(
+        dae_dataset = DaeDataset(
             dataset, dataset.sizes, self.src_dict,
             src_langs=src_langs,
             mask_idx=_mask_index(self.src_dict) if self.blank_mask_token else self.src_dict.unk(),
@@ -441,6 +440,18 @@ class MonoDatasetLoader(object):
             shuffle=True,
             static_noising=self.static_noising
         )
+
+        if self.max_dataset_length > 0:
+            size_ratio = min(float(self.max_dataset_length) / len(dae_dataset), 1.)
+            print("|  [resample] downsample DAE-mono data with ratio: {}".format(size_ratio))
+            dae_dataset = ResamplingDataset(
+                dae_dataset,
+                size_ratio=size_ratio,
+                seed=self.seed,
+                epoch=self.epoch,
+                replace=False
+            )
+        return dae_dataset
 
     def _load_dataset_from_file(self, src, data_path, src_datasets, src_langs, task="dae"):
         for k in itertools.count():
@@ -471,7 +482,8 @@ class MonoDatasetLoader(object):
     def set_mlm_hparams(
         self, src_dict, token_range,
         masking_ratio, masking_prob, random_token_prob, word_mask,
-        span_mask, span_len_lambda
+        span_mask, span_len_lambda,
+        bpe_cont_marker
     ):
         self.src_dict = src_dict
         self.token_range = token_range
@@ -481,6 +493,7 @@ class MonoDatasetLoader(object):
         self.word_mask = word_mask
         self.span_mask = span_mask
         self.span_len_lambda = span_len_lambda
+        self.bpe_cont_marker = bpe_cont_marker
     
     def set_dae_hparams(
         self,
