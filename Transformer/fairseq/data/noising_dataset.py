@@ -107,17 +107,17 @@ class DaeDataset(FairseqDataset):
         src_lang = self.src_langs[index] if self.src_langs is not None else None
         lang_id = _lang_token_index(self.src_dict, src_lang)
 
+        if self.remove_eos_from_source:
+            eos = self.src_dict.eos()
+            if src_item[-1] == eos:
+                src_item = src_item[:-1]
+
         # add noise
         if self.static_noising:
             with data_utils.numpy_seed(self.seed + index):
                 noisy_src_item, noisy_src_lengths = self.noising(src_item, src_lengths)
         else:
             noisy_src_item, noisy_src_lengths = self.noising(src_item, src_lengths)
-
-        if self.remove_eos_from_source:
-            eos = self.src_dict.eos()
-            if src_item[-1] == eos:
-                src_item = src_item[:-1]
         
         if self.append_langid_encoder:
             noisy_src_item = torch.cat([noisy_src_item, torch.LongTensor([lang_id])])
@@ -141,7 +141,7 @@ class DaeDataset(FairseqDataset):
 
         # Text Infilling
         noisy_src_tokens, _, noisy_src_lengths = self.text_infilling.masking(
-            x=noisy_src_tokens.squeeze(),
+            x=noisy_src_tokens.squeeze(1),
             lengths=noisy_src_lengths,
             masking_ratio=self.text_infilling_ratio,
             span_len_lambda=self.text_infilling_lambda
@@ -164,7 +164,7 @@ class DaeDataset(FairseqDataset):
             blank_idx=self.mask_idx,
         )
 
-        noisy_src_tokens = noisy_src_tokens.squeeze()
+        noisy_src_tokens = noisy_src_tokens.squeeze(1)
         return noisy_src_tokens, noisy_src_lengths
 
     def collater(self, samples):
@@ -186,6 +186,10 @@ class DaeDataset(FairseqDataset):
     def size(self, index):
         return self.src_sizes[index]
     
+    @property
+    def sizes(self):
+        return self.src_sizes
+
     def ordered_indices(self):
         """
         Return an ordered list of indices. Batches will be constructed based
@@ -215,7 +219,7 @@ class DaeDataset(FairseqDataset):
         if kwargs.get('word_dropout_prob') is not None:
             self.word_dropout_prob = kwargs['word_dropout_prob']
         if kwargs.get('word_blanking_prob') is not None:
-            self.word_dropout_prob = kwargs['word_blanking_prob']
+            self.word_blanking_prob = kwargs['word_blanking_prob']
         if kwargs.get('max_word_shuffle_distance') is not None:
             self.max_word_shuffle_distance = kwargs['max_word_shuffle_distance']
         if kwargs.get('text_infilling_ratio') is not None:
