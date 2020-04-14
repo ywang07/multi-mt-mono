@@ -29,6 +29,7 @@ class Dictionary(object):
         self.eos_index = self.add_symbol(eos)
         self.unk_index = self.add_symbol(unk)
         self.nspecial = len(self.symbols)
+        self.special_symbol_index = [self.bos_index, self.pad_index, self.eos_index, self.unk_index]
 
     def __eq__(self, other):
         return self.indices == other.indices
@@ -158,6 +159,13 @@ class Dictionary(object):
     def unk(self):
         """Helper to get index of unk symbol"""
         return self.unk_index
+
+    def special_symbols(self):
+        return self.special_symbol_index
+
+    def add_special_symbol(self, index):
+        self.special_symbol_index.append(index)
+        self.special_symbol_index = list(set(self.special_symbol_index))
 
     @classmethod
     def load(cls, f, ignore_utf_errors=False):
