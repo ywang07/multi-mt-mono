@@ -20,14 +20,17 @@ from fairseq.data import (
     Dictionary,
     ConcatDataset,
     data_utils,
-    indexed_dataset,
 )
 from fairseq.data.language_pair_langid_dataset import LanguagePairLangidDataset
 from fairseq.data.resampling_dataset import ResamplingDataset
 from fairseq.data.sort_dataset import SortDataset
 from . import FairseqTask, register_task
 
-from fairseq.data.langpair_dataset_loader import LangpairDatasetLoader
+from fairseq.data.langpair_dataset_loader import (
+    LangpairDatasetLoader,
+    get_sample_prob,
+    get_size_ratio,
+)
 
 def _lang_token(lang: str):
     return '__{}__'.format(lang)
@@ -39,159 +42,6 @@ def _lang_token_index(dic: Dictionary, lang: str):
     assert idx != dic.unk_index, \
         'cannot find language token for lang {}'.format(lang)
     return idx
-
-
-def load_langpair_langid_ols_dataset(
-    data_path, split, lang_pairs, src_dict, tgt_dict,
-    combine, dataset_impl, upsample_primary,
-    left_pad_source, left_pad_target, max_source_positions, max_target_positions,
-    encoder_langtok, decoder_langtok, 
-    is_train=True, seed=1, epoch=0,
-    language_sample_temperature=1.0, language_upsample_max=False,
-):
-    """
-    deprecated 
-    """
-    def _get_sample_prob(dataset_lens, temp):
-        """
-        Temperature based sampling
-        https://arxiv.org/abs/1907.05019
-        
-        p_l \\prop (D_l / \\sum D_k) ^ 1/T
-        """
-        prob = dataset_lens / dataset_lens.sum()
-        smoothed_prob = prob ** (1./temp)
-        smoothed_prob = smoothed_prob / smoothed_prob.sum()
-        return smoothed_prob
-
-    def split_exists(split, src, tgt, lang, data_path):
-        filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
-        return indexed_dataset.dataset_exists(filename, impl=dataset_impl)
-    
-    def _load_dataset(src, tgt, data_path, src_datasets, tgt_datasets, src_langs, tgt_langs):
-        for k in itertools.count():
-            split_k = split + (str(k) if k > 0 else '')
-
-            # infer langcode
-            if split_exists(split_k, src, tgt, src, data_path):
-                prefix = os.path.join(data_path, '{}.{}-{}.'.format(split_k, src, tgt))
-            elif split_exists(split_k, tgt, src, src, data_path):
-                prefix = os.path.join(data_path, '{}.{}-{}.'.format(split_k, tgt, src))
-            else:
-                if k > 0:
-                    break
-                else:
-                    raise FileNotFoundError('Dataset not found: {} ({})'.format(split, data_path))
-
-            src_datasets.append(indexed_dataset.make_dataset(
-                prefix + src, impl=dataset_impl, fix_lua_indexing=True, dictionary=src_dict))
-            tgt_datasets.append(indexed_dataset.make_dataset(
-                prefix + tgt, impl=dataset_impl, fix_lua_indexing=True, dictionary=tgt_dict))
-
-            print('| {} {} {}-{} {} examples'.format(data_path, split_k, src, tgt, len(src_datasets[-1])))
-            src_langs += [src] * len(src_datasets[-1])
-            tgt_langs += [tgt] * len(src_datasets[-1])
-
-            if not combine:
-                break
-        return src_datasets, tgt_datasets, src_langs, tgt_langs
-    
-    # for resampling
-    if is_train and language_sample_temperature != 1.:
-        lang_pair_datasets = []
-
-        for lang_pair in lang_pairs:
-            src, tgt = lang_pair.split("-")
-
-            src_datasets, tgt_datasets, src_langs, tgt_langs = _load_dataset(
-                src, tgt, data_path, [], [], [], [])
-
-            assert len(src_datasets) == len(tgt_datasets)
-            assert len(src_langs) == len(tgt_langs)
-            if len(src_datasets) == 1:
-                src_dataset, tgt_dataset = src_datasets[0], tgt_datasets[0]
-            else:
-                src_dataset = ConcatDataset(src_datasets)
-                tgt_dataset = ConcatDataset(tgt_datasets)
-
-            lang_pair_dataset = LanguagePairLangidDataset(
-                src_dataset, src_dataset.sizes, src_dict, src_langs,
-                tgt_dataset, tgt_dataset.sizes, tgt_dict, tgt_langs,
-                left_pad_source=left_pad_source,
-                left_pad_target=left_pad_target,
-                shuffle=True,
-                max_source_positions=max_source_positions,
-                max_target_positions=max_target_positions,
-                encoder_langtok=encoder_langtok,
-                decoder_langtok=decoder_langtok
-            )
-            lang_pair_datasets.append(lang_pair_dataset)
-        
-        # resampling
-        dataset_lengths = np.array([len(d) for d in lang_pair_datasets], dtype=float)
-        print("| loaded {} language pairs".format(len(dataset_lengths)))
-        sample_probs = _get_sample_prob(dataset_lengths, temp=language_sample_temperature)
-        print("| sampling probability by language: {}".format(
-            ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
-            for _i, _lang in enumerate(lang_pairs)])))
-        
-        if language_upsample_max:
-            max_id = dataset_lengths.argmax()
-            max_size, max_probs = dataset_lengths[max_id], sample_probs[max_id]
-            size_ratios = sample_probs / max_probs * max_size / dataset_lengths
-        else:
-            size_ratios = (sample_probs * dataset_lengths.sum()) / dataset_lengths
-        print("| up/down sampling ratio by language: {}".format(
-            ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
-            for _i, _lang in enumerate(lang_pairs)])))
-        
-        resampled_lang_pair_datasets = [
-            ResamplingDataset(
-                lang_pair_datasets[i],
-                size_ratio=size_ratios[i],
-                seed=seed,
-                epoch=epoch,
-                replace=size_ratios[i] > 1.0
-            )
-            # if size_ratios[i] != 1.0 else lang_pair_datasets[i]
-            for i, d in enumerate(lang_pair_datasets)]
-        dataset = ConcatDataset(resampled_lang_pair_datasets)
-
-        # shuffle dataset
-        with data_utils.numpy_seed(seed + epoch):
-            shuffle = np.random.permutation(len(dataset))
-        # sort primarily by source length, then by shuffle seeds
-        return SortDataset(dataset, sort_order=[shuffle, dataset.sizes])
-        
-    # no resampling
-    src_datasets, tgt_datasets = [], []
-    src_langs, tgt_langs = [], []
-
-    for lang_pair in lang_pairs:
-        src, tgt = lang_pair.split("-")
-        src_datasets, tgt_datasets, src_langs, tgt_langs = _load_dataset(
-            src, tgt, data_path, src_datasets, tgt_datasets, src_langs, tgt_langs)
-        
-    assert len(src_datasets) == len(tgt_datasets)
-    assert len(src_langs) == len(tgt_langs)
-
-    if len(src_datasets) == 1:
-        src_dataset, tgt_dataset = src_datasets[0], tgt_datasets[0]
-    else:
-        src_dataset = ConcatDataset(src_datasets)
-        tgt_dataset = ConcatDataset(tgt_datasets)
-
-    return LanguagePairLangidDataset(
-        src_dataset, src_dataset.sizes, src_dict, src_langs,
-        tgt_dataset, tgt_dataset.sizes, tgt_dict, tgt_langs,
-        left_pad_source=left_pad_source,
-        left_pad_target=left_pad_target,
-        shuffle=True,
-        max_source_positions=max_source_positions,
-        max_target_positions=max_target_positions,
-        encoder_langtok=encoder_langtok,
-        decoder_langtok=decoder_langtok
-    )
 
 
 @register_task('translation_mtl_ols')
@@ -236,6 +86,8 @@ class TranslationMtlOlsTask(FairseqTask):
         
         # BT
         parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
+        parser.add_argument('--downsample-bt', action='store_true',
+                            help="downsample bt to match the length of bitext data")
 
         # online sampling
         parser.add_argument('--language-sample-temperature', default=1.0, type=float, 
@@ -243,11 +95,22 @@ class TranslationMtlOlsTask(FairseqTask):
         parser.add_argument('--language-upsample-max', action='store_true',
                             help='upsample to make the max-capacity language a full set '
                                  '(default: upsample and downsample to maintain the same total corpus size)')
-    
-    def __init__(self, args, src_dict, tgt_dict, training):
+
+        # dynamic temperature
+        parser.add_argument('--language-temperature-scheduler', default='static', type=str, 
+                            help='sampling temperature scheduler [static, linear]')
+        parser.add_argument('--min-language-sample-temperature', default=1.0, type=float, 
+                            help='min (starting) sampling temperature')
+        parser.add_argument('--language-sample-warmup-epochs', default=0, type=int, 
+                            help='warmup epochs for language sampling scheduler')
+
+    def __init__(self, args, src_dict, tgt_dict, training, src_token_range=None, tgt_token_range=None):
         super().__init__(args)
         self.src_dict = src_dict
         self.tgt_dict = tgt_dict
+        self.src_token_range = src_token_range
+        self.tgt_token_range = tgt_token_range
+
         self.lang_pairs = args.lang_pairs
         # eval_lang_pairs for multilingual translation is usually all of the
         # lang_pairs. However for other multitask settings or when we want to
@@ -262,10 +125,20 @@ class TranslationMtlOlsTask(FairseqTask):
         self.langs = sorted(list({x for lang_pair in args.lang_pairs for x in lang_pair.split('-')}))
         self.training = training
 
+        self.data_lengths = None
+        self.dataset_to_epoch_iter = {}
+        self.use_bt = False
+        self.data_bt_lengths = None
+
+        self.update_iterator = (self.args.language_sample_temperature != 1. \
+            or self.args.language_temperature_scheduler != "static" \
+            or self.args.downsample_bt 
+        )
+
     @classmethod
     def setup_task(cls, args, **kwargs):
-        src_dict, tgt_dict, training = cls.prepare(args, **kwargs)
-        return cls(args, src_dict, tgt_dict, training)
+        src_dict, tgt_dict, training, src_token_range, tgt_token_range = cls.prepare(args, **kwargs)
+        return cls(args, src_dict, tgt_dict, training, src_token_range, tgt_token_range)
     
     @classmethod
     def prepare(cls, args, **kargs):
@@ -297,14 +170,19 @@ class TranslationMtlOlsTask(FairseqTask):
         assert src_dict.pad() == tgt_dict.pad()
         assert src_dict.eos() == tgt_dict.eos()
         assert src_dict.unk() == tgt_dict.unk()
+        src_token_range = ((src_dict.nspecial, len(src_dict)))
+        tgt_token_range = ((tgt_dict.nspecial, len(tgt_dict)))
+
         # add language token
         if args.encoder_langtok is not None or args.decoder_langtok:
             for lang_to_add in sorted_langs:
-                src_dict.add_symbol(_lang_token(lang_to_add))
-                tgt_dict.add_symbol(_lang_token(lang_to_add))
-        print('| [src] dictionary: {} types'.format(len(src_dict)))
-        print('| [tgt] dictionary: {} types'.format(len(tgt_dict)))
-        return src_dict, tgt_dict, training
+                _land_idx = src_dict.add_symbol(_lang_token(lang_to_add))
+                src_dict.add_special_symbol(_land_idx)
+                _land_idx = tgt_dict.add_symbol(_lang_token(lang_to_add))
+                tgt_dict.add_special_symbol(_land_idx)
+        print('| [src] dictionary: {} types, token range: {}'.format(len(src_dict), src_token_range))
+        print('| [tgt] dictionary: {} types, token range: {}'.format(len(tgt_dict), tgt_token_range))
+        return src_dict, tgt_dict, training, src_token_range, tgt_token_range
     
     def get_batch_iterator(
         self, dataset, max_tokens=None, max_sentences=None, max_positions=None,
@@ -342,11 +220,16 @@ class TranslationMtlOlsTask(FairseqTask):
             ~fairseq.iterators.EpochBatchIterator: a batched iterator over the
                 given dataset split
         """
+        # only rebuild iterator when online resampling needed
+        if not self.update_iterator and dataset in self.dataset_to_epoch_iter:
+            return self.dataset_to_epoch_iter[dataset]   
+
+        seed = seed + epoch
         assert isinstance(dataset, FairseqDataset)
 
         # initialize the dataset with the correct starting epoch
         # has to do so for online resampling
-        dataset.set_epoch(epoch)
+        dataset = self.set_translation_epoch(dataset, epoch=epoch, seed=seed)
 
         # get indices ordered by example size
         with data_utils.numpy_seed(seed):
@@ -364,7 +247,7 @@ class TranslationMtlOlsTask(FairseqTask):
         )
 
         # return a reusable, sharded iterator
-        return iterators.EpochBatchIterator(
+        epoch_iter = iterators.EpochBatchIterator(
             dataset=dataset,
             collate_fn=dataset.collater,
             batch_sampler=batch_sampler,
@@ -374,6 +257,8 @@ class TranslationMtlOlsTask(FairseqTask):
             num_workers=num_workers,
             epoch=epoch,
         )
+        self.dataset_to_epoch_iter[dataset] = epoch_iter
+        return epoch_iter
     
     def load_dataset(self, split, epoch=0, combine=False, **kwargs):
         """Load a given dataset split.
@@ -390,12 +275,16 @@ class TranslationMtlOlsTask(FairseqTask):
             paths_bt = self.args.data_bt.split(':')
             bt_data_path = paths_bt[epoch % len(paths_bt)]
 
+        language_sample_temperature = getattr(
+            self.args, "min_language_sample_temperature", self.args.language_sample_temperature)
+        if self.args.language_temperature_scheduler == "static":
+            language_sample_temperature = self.args.language_sample_temperature
+        resample = language_sample_temperature != 1.0 or self.args.language_temperature_scheduler != "static"
+        is_train = (split == self.args.train_subset)
+
         from fairseq import meters
         load_timer = meters.StopwatchMeter()
         load_timer.start()
-
-        resample = self.args.language_sample_temperature != 1.0
-        is_train = (split == self.args.train_subset)
 
         dataset_loader = LangpairDatasetLoader(
             data_path, split, self.lang_pairs, self.src_dict, self.tgt_dict,
@@ -411,12 +300,15 @@ class TranslationMtlOlsTask(FairseqTask):
             seed=self.args.seed,
             epoch=epoch,
             resample=(resample and is_train),
-            language_sample_temperature=self.args.language_sample_temperature,
+            language_sample_temperature=language_sample_temperature,
             language_upsample_max=self.args.language_upsample_max,
             bt_data_path=bt_data_path,
-            is_train=is_train
+            is_train=is_train,
+            downsample_bt=self.args.downsample_bt
         )
-        self.datasets[split], _ = dataset_loader.load_all_langpair_dataset()
+        self.datasets[split], data_lengths, bt_lengths = dataset_loader.load_all_langpair_dataset()
+        self.data_lengths = data_lengths if is_train else self.data_lengths
+        self.data_bt_lengths = bt_lengths if is_train else self.data_bt_lengths
 
         load_timer.stop()
         print('| loading dataset took total {} seconds'.format(load_timer.sum))
@@ -452,19 +344,14 @@ class TranslationMtlOlsTask(FairseqTask):
                 - logging outputs to display while training
         """
         model.train()
-
-        """
-        print("\n[debug]==========================")
-        print("sample:    {}".format(type(sample)))
-        print("\nsrc_tokens:")
-        for s in sample['net_input']['src_tokens']:
-            print(self.src_dict.string(s))
-        print("\ntarget:")
-        for s in sample['target']:
-            print(self.src_dict.string(s))
-        print("[debug]==========================")
-        """
         
+        """
+        for i, s in enumerate(sample['net_input']['src_tokens']):
+            print('[debug] gpu{}-#{} src     : {}'.format(
+                self.args.distributed_rank, i, self.src_dict.string(s)), 
+                flush=True, force=True)
+        """
+
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
@@ -485,3 +372,51 @@ class TranslationMtlOlsTask(FairseqTask):
         """Return the target :class:`~fairseq.data.Dictionary`."""
         return self.tgt_dict
 
+    def get_sampling_temperature(self, epoch):
+        if self.args.language_temperature_scheduler == "linear":
+            # epoch * (T-T_0)/warmup_epochs + T_0
+            t = self.args.language_sample_temperature - self.args.min_language_sample_temperature
+            t *= float(epoch) / self.args.language_sample_warmup_epochs
+            return t + self.args.min_language_sample_temperature
+        raise NotImplementedError
+
+    def get_resampling_size_ratio(self, epoch):
+        new_temp = self.get_sampling_temperature(epoch)
+        sample_probs = get_sample_prob(self.data_lengths, new_temp)
+        size_ratios = get_size_ratio(
+            sample_probs, self.data_lengths, 
+            language_upsample_max=self.args.language_upsample_max)
+        print("| [resample]  epoch {:03d}, sampling temperature: T = {}".format(epoch, new_temp))
+        print("| [resample]  epoch {:03d}, sampling probability by language: {}".format(
+            epoch, ", ".join(["{}: {:0.4f}".format(_lang, sample_probs[_i])
+            for _i, _lang in enumerate(self.lang_pairs)])))
+        print("| [resample]  epoch {:03d}, up/down sampling ratio by language: {}".format(
+            epoch, ", ".join(["{}: {:0.2f}".format(_lang, size_ratios[_i])
+            for _i, _lang in enumerate(self.lang_pairs)])))
+        return size_ratios
+    
+    def set_translation_epoch(self, dataset, seed=1, epoch=0):
+        """
+        set epoch for translation dataset resampling
+        update size ratio if changing sampling temperature
+        """
+        # initialize the dataset with the correct starting epoch
+        # has to do so for online resampling
+        if epoch > 0 and self.args.language_temperature_scheduler != "static" and \
+            epoch <= self.args.language_sample_warmup_epochs:
+            # update epoch and size ratios
+            size_ratios = self.get_resampling_size_ratio(epoch)
+            if self.args.language_upsample_max and self.args.downsample_bt:
+                bt_ratio = min(sum(self.data_lengths) / float(self.data_bt_lengths), 1.0)
+                print("[resample] epoch {:03d}, downsampling ratio for bt: {}".format(epoch, bt_ratio))
+                size_ratios = np.concatenate([size_ratios, np.array([bt_ratio])])
+            dataset.set_epoch(epoch, size_ratios=size_ratios)
+
+            # reset sort order
+            if isinstance(dataset, SortDataset):
+                with data_utils.numpy_seed(seed + epoch):
+                    shuffle = np.random.permutation(len(dataset))
+                dataset.set_sort_order(sort_order=[shuffle, dataset.sizes])
+        else:
+            dataset.set_epoch(epoch)
+        return dataset
