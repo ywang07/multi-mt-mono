@@ -15,6 +15,8 @@ import torch
 from fairseq import options, utils
 from fairseq.data import (
     Dictionary,
+    iterators,
+    FairseqDataset,
     data_utils,
 )
 from . import FairseqTask, register_task
@@ -48,7 +50,6 @@ class TranslationMtlTask(FairseqTask):
         """Add task-specific arguments to the parser."""
         # fmt: off
         parser.add_argument('data', metavar='DIR', help='path to data directory')
-        parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
         parser.add_argument('--lang-pairs', default=None, metavar='PAIRS',
                             help='comma-separated list of language pairs: en-de,en-fr,de-fr')
         parser.add_argument('-s', '--source-lang', default=None, metavar='SRC',
@@ -76,6 +77,11 @@ class TranslationMtlTask(FairseqTask):
         parser.add_argument('--decoder-langtok', action='store_true',
                             help='replace beginning-of-sentence in target sentence with target language token')
     
+        # BT
+        parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
+        parser.add_argument('--downsample-bt', action='store_true',
+                            help="downsample bt to match the length of bitext data")
+
     def __init__(self, args, src_dict, tgt_dict, training):
         super().__init__(args)
         self.src_dict = src_dict
@@ -93,6 +99,9 @@ class TranslationMtlTask(FairseqTask):
         self.model_lang_pairs = copy.copy(args.lang_pairs)
         self.langs = sorted(list({x for lang_pair in args.lang_pairs for x in lang_pair.split('-')}))
         self.training = training
+
+        self.use_bt = False
+        self.data_bt_lengths = None
 
     @classmethod
     def setup_task(cls, args, **kwargs):
@@ -138,6 +147,73 @@ class TranslationMtlTask(FairseqTask):
         print('| [tgt] dictionary: {} types'.format(len(tgt_dict)))
         return src_dict, tgt_dict, training
     
+    def get_batch_iterator(
+        self, dataset, max_tokens=None, max_sentences=None, max_positions=None,
+        ignore_invalid_inputs=False, required_batch_size_multiple=1,
+        seed=1, num_shards=1, shard_id=0, num_workers=0, epoch=0,
+    ):
+        """
+        Get an iterator that yields batches of data from the given dataset.
+
+        Args:
+            dataset (~fairseq.data.FairseqDataset): dataset to batch
+            max_tokens (int, optional): max number of tokens in each batch
+                (default: None).
+            max_sentences (int, optional): max number of sentences in each
+                batch (default: None).
+            max_positions (optional): max sentence length supported by the
+                model (default: None).
+            ignore_invalid_inputs (bool, optional): don't raise Exception for
+                sentences that are too long (default: False).
+            required_batch_size_multiple (int, optional): require batch size to
+                be a multiple of N (default: 1).
+            seed (int, optional): seed for random number generator for
+                reproducibility (default: 1).
+            num_shards (int, optional): shard the data iterator into N
+                shards (default: 1).
+            shard_id (int, optional): which shard of the data iterator to
+                return (default: 0).
+            num_workers (int, optional): how many subprocesses to use for data
+                loading. 0 means the data will be loaded in the main process
+                (default: 0).
+            epoch (int, optional): the epoch to start the iterator from
+                (default: 0).
+
+        Returns:
+            ~fairseq.iterators.EpochBatchIterator: a batched iterator over the
+                given dataset split
+        """
+        seed = seed + epoch
+        assert isinstance(dataset, FairseqDataset)
+
+        dataset.set_epoch(epoch)
+
+        # get indices ordered by example size
+        with data_utils.numpy_seed(seed):
+            indices = dataset.ordered_indices()
+
+        # filter examples that are too large
+        indices = data_utils.filter_by_size(
+            indices, dataset.size, max_positions, raise_exception=(not ignore_invalid_inputs),
+        )
+
+        # create mini-batches with given size constraints
+        batch_sampler = data_utils.batch_by_size(
+            indices, dataset.num_tokens, max_tokens=max_tokens, max_sentences=max_sentences,
+            required_batch_size_multiple=required_batch_size_multiple,
+        )
+
+        # return a reusable, sharded iterator
+        return iterators.EpochBatchIterator(
+            dataset=dataset,
+            collate_fn=dataset.collater,
+            batch_sampler=batch_sampler,
+            seed=seed,
+            num_shards=num_shards,
+            shard_id=shard_id,
+            num_workers=num_workers,
+            epoch=epoch,
+        )
     
     def load_dataset(self, split, epoch=0, combine=False, **kwargs):
         """Load a given dataset split.
@@ -173,10 +249,13 @@ class TranslationMtlTask(FairseqTask):
             decoder_langtok=self.args.decoder_langtok,
             seed=self.args.seed,
             epoch=epoch,
+            resample=False,
             bt_data_path=bt_data_path,
-            is_train=is_train
+            is_train=is_train,
+            downsample_bt=self.args.downsample_bt
         )
-        self.datasets[split], _ = dataset_loader.load_all_langpair_dataset()
+        self.datasets[split], _, bt_lengths = dataset_loader.load_all_langpair_dataset()
+        self.data_bt_lengths = bt_lengths if is_train else self.data_bt_lengths
 
         load_timer.stop()
         print('(loading dataset took total {} seconds)'.format(load_timer.sum))
@@ -214,19 +293,12 @@ class TranslationMtlTask(FairseqTask):
         model.train()
 
         """
-        print("[debug]==========================")
-        print("sample:    {}".format(type(sample)))
-        # print(sample)
-        print("\nsrc_tokens:")
-        for s in sample['net_input']['src_tokens']:
-            # print(s)
-            print(self.src_dict.string(s))
-        print("\ntarget:")
-        for s in sample['target']:
-            print(self.src_dict.string(s))
-        print("[debug]==========================")
+        for i, s in enumerate(sample['net_input']['src_tokens']):
+            print('[debug] gpu{}-#{} src     : {}'.format(
+                self.args.distributed_rank, i, self.src_dict.string(s)), 
+                flush=True)
         """
-        
+
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
