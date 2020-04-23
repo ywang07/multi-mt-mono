@@ -316,7 +316,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             print("| [multitask] epoch {:03d}, alpha_mlm: {}, alpha_dae: {}".format(
                 epoch, self.mlm_alpha, self.dae_alpha))
         
-        # only rebuild iterator when online resampling meeded
+        # only rebuild iterator when online resampling needed
         if not self.update_iterator and dataset in self.dataset_to_epoch_iter:
             return self.dataset_to_epoch_iter[dataset]        
         
@@ -430,7 +430,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
      
         dataset_mt, data_lengths, bt_lengths = dataset_loader.load_all_langpair_dataset()
         self.data_lengths = data_lengths if is_train else self.data_lengths
-        self.data_bt_lengths = bt_lengths
+        self.data_bt_lengths = bt_lengths if is_train else self.data_bt_lengths
         all_datasets = [("translation", dataset_mt)]
 
         # mono data
@@ -539,21 +539,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         for kk in self.criterions.keys():
             self.criterions[kk].train()
         agg_loss, agg_sample_size, agg_logging_output = 0., 0., {}
-
-        """
-        torch.set_printoptions(profile="full")
-        print("[debug] gpu_id={}, mt : {} ({}), mlm: {} ({}), dae: {} ({})".format(
-            self.args.distributed_rank,
-            sample['translation']['net_input']['src_tokens'].size(), sample['translation']['net_input']['src_tokens'].numel(),
-            sample['mlm']['net_input']['src_tokens'].size(), sample['mlm']['net_input']['src_tokens'].numel(),
-            sample['dae']['net_input']['src_tokens'].size(), sample['dae']['net_input']['src_tokens'].numel()),
-            flush=True, force=True)
         
-        print("\n[debug] gpu_id={}, sample['dae']: {}".format(
-            self.args.distributed_rank, sample['dae']['net_input']['src_tokens']),
-            flush=True, force=True)
-        """
-
         try:
             # seq2seq for MT
             loss_seq2seq, sample_size, logging_output = self.criterions['seq2seq'](
@@ -741,9 +727,9 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             epoch <= self.args.language_sample_warmup_epochs:
             # update epoch and size ratios
             size_ratios = self.get_resampling_size_ratio(epoch)
-            if self.args.language_upsample_max and self.args.downsample_bt:
+            if self.args.downsample_bt:
                 bt_ratio = min(sum(self.data_lengths) / float(self.data_bt_lengths), 1.0)
-                print("[resample] epoch {:03d}, downsampling ratio for bt: {}".format(epoch, bt_ratio))
+                print("| [resample] epoch {:03d}, downsampling ratio for bt: {}".format(epoch, bt_ratio))
                 size_ratios = np.concatenate([size_ratios, np.array([bt_ratio])])
             dataset.set_epoch(epoch, size_ratios=size_ratios)
 
