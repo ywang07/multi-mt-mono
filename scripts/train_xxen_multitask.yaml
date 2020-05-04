@@ -1,0 +1,27 @@
+
+description: wmt_mtl
+
+target:
+    vc: msrmt
+    cluster: eu3
+
+environment:
+    image:  nvidia/pytorch:19.10-py3
+    registry: nvcr.io
+
+code:
+    local_dir: /home/t-yirwan/data/codes/scripts/run_wmt/wmt_mtl/run_script
+
+data:
+    local_dir: ~/data/data/wmt/wmt_mtl/data_l10d02
+    remote_dir: data/wmt/wmt_mtl/data_l10d02
+
+jobs:
+- name: train_301_xe_l10d02m20m_t5l1w5_mwd_dsp35_bt
+  sku: G8
+  command:
+  - ./train.sh
+    /mnt/default/data/wmt/wmt_mtl/data_l10d02
+    wmt_mtl
+    301_xxen_l10d02m20m_t5l1w5_mlmwd_daesp35_bt
+    "--ddp-backend=no_c10d --dataset-impl mmap --task translation_mtl_multitask_curr --arch transformer_mlm_vaswani_wmt_en_de_big --lang-pairs fr-en,de-en,fi-en,cs-en,et-en,tr-en,lv-en,ro-en,hi-en,gu-en --save-interval-updates 1000 --max-tokens 4096 --dropout 0.1 --attention-dropout 0.1 --language-temperature-scheduler linear --language-sample-temperature 5 --min-language-sample-temperature 1 --language-sample-warmup-epochs 5 --data-mono /mnt/default/data/wmt/wmt_mtl/data_mono_filt20m_l10d02 --downsample-mono --multitask-mlm --lang-mlm fr,de,fi,cs,et,tr,lv,ro,hi,gu --mlm-word-mask --multitask-dae --lang-dae en --dae-dropout-prob 0.0 --dae-blanking-prob 0.0 --dae-span-masking-ratio 0.35 --dae-span-lambda 3.5 --data-bt /mnt/default/data/wmt/wmt_mtl/data_bt_filt20m_l10d02 --downsample-bt"

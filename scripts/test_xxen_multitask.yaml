@@ -1,0 +1,28 @@
+description: wmt_mtl
+
+target:
+    vc: msrmt
+    cluster: wu2
+
+environment:
+    image:  nvidia/pytorch:19.10-py3
+    registry: nvcr.io
+    setup:
+    - pip install sentencepiece --user
+    - pip install portalocker --user
+
+code:
+    local_dir: /home/t-yirwan/data/codes/scripts/run_wmt/wmt_mtl/run_script
+
+data:
+    local_dir: ~/data/data/wmt/wmt_mtl/data_l10d02
+    remote_dir: data/wmt/wmt_mtl/data_l10d02
+
+jobs:
+
+- name: t301_xe
+  sku: G1
+  command:
+  - ./test.sh $$PT_DATA_DIR wmt_mtl 301_xxen_l10d02m20m_t5l1w5_mlmwd_daesp35_bt
+    "all10" "en" "false"
+    "--task translation_mtl_multitask_curr --lang-pairs fr-en,de-en,fi-en,cs-en,et-en,tr-en,lv-en,ro-en,hi-en,gu-en"
