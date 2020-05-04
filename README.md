@@ -10,14 +10,14 @@ Multitask training for Multilingual Neural Machine Translation
 
 #### Table of Contents
 
-* [Usage](#usage): example training / test commands
-* [Data](#data): instructions on data construction and organization
-* [Tasks](#tasks): description of self-defined tasks
-* [Named Arguments](#named_args): full list of self-defined arguments
-* [Scripts](#scripts): example scripts for training, test and data construction
-* [Codes](#codes): list of files with major modifications
+* [Usage](#sec_usage): example training / test commands
+* [Data](#sec_data): instructions on data construction and organization
+* [Tasks](#sec_tasks): description of self-defined tasks
+* [Named Arguments](#sec_named_args): full list of self-defined arguments
+* [Scripts](#sec_scripts): example scripts for training, test and data construction
+* [Codes](#sec_codes): list of files with major modifications
 
-# <a name="usage"> Usage </a>
+# <a name="sec_usage"> Usage </a>
 
 ### MultiNMT Baseline
 
@@ -98,7 +98,7 @@ For X-X, change to:
 --lang-dae "en,fr,de,fi"
 ```
 
-# <a name="data"> Data </a>
+# <a name="sec_data"> Data </a>
 
 ### Bitext Data
 Bitext training data for all language pairs should be kept in ```$DATA_DIR```.
@@ -204,7 +204,7 @@ train.en.bin
 train.en.idx
 ```
 
-# <a name="tasks"> Tasks </a>
+# <a name="sec_tasks"> Tasks </a>
 
 ### <a name="tasks_mtl"> translation_mtl </a>
 Task for multilingual translation, supports:
@@ -246,7 +246,7 @@ Note: to use this task, model must be ```transformer_mlm```, e.g. ```--arch tran
 
 Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_multitask).
 
-# <a name="named_args"> Named Arguments </a>
+# <a name="sec_named_args"> Named Arguments </a>
 
 ### <a name="args_mtl"> Multilingual Training </a>
 |                   |                |
@@ -336,7 +336,7 @@ W(k) = W - (W - W_0) / N
 | --dae-span-masking-ratio-warmup-epochs | warmup epochs for span masking ratio scheduler <br><br> default: 1 |
 | --dae-span-masking-ratio-scheduler | DAE span masking ratio scheduler <br><br> default: static, choices=[static, linear] |
 
-# <a name="scripts"> Scripts </a>
+# <a name="sec_scripts"> Scripts </a>
 |                           |                |
 | -----------------         |:---------------| 
 | train.sh                  | training script |
@@ -349,7 +349,7 @@ W(k) = W - (W - W_0) / N
 | data/filter_mono.py       | rule based filtering for monolingual data |
 | data/sample_offline_up.py | temperature based offline upsampling |
 
-# <a name="codes"> Codes </a>
+# <a name="sec_codes"> Codes </a>
 Description of files with new features or major modifications.
 
 ### tasks
