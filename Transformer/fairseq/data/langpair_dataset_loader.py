@@ -105,7 +105,7 @@ class LangpairDatasetLoader(object):
             lang_pairs=self.lang_pairs,
             is_bt=True
         ) if (self.bt_data_path is not None and self.is_train) else None
-        bt_length = None
+        bt_length = len(bt_dataset) if bt_dataset is not None else None
 
         # load bitext corpus (with resampling)
         if self.resample and self.is_train:
@@ -116,7 +116,7 @@ class LangpairDatasetLoader(object):
             )
             # bitext + bt
             if bt_dataset is not None:
-                bt_dataset, bt_length = self.load_bt_dataset(bt_dataset, bitext_lengths=sum(dataset_lengths))
+                bt_dataset = self.load_bt_dataset(bt_dataset, bitext_lengths=sum(dataset_lengths))
                 resampled_lang_pair_datasets.append(bt_dataset)
             dataset = ConcatDataset(resampled_lang_pair_datasets)
 
@@ -134,7 +134,7 @@ class LangpairDatasetLoader(object):
         )
         # bitext + bt
         if bt_dataset is not None:
-            bt_dataset, bt_length = self.load_bt_dataset(bt_dataset, bitext_lengths=len(bitext_dataset))
+            bt_dataset = self.load_bt_dataset(bt_dataset, bitext_lengths=len(bitext_dataset))
             dataset = ConcatDataset([bitext_dataset, bt_dataset])
             with data_utils.numpy_seed(self.seed + self.epoch):
                 shuffle = np.random.permutation(len(dataset))
@@ -154,7 +154,7 @@ class LangpairDatasetLoader(object):
                 seed=self.seed,
                 epoch=self.epoch,
             )
-        return bt_dataset, len(bt_dataset)
+        return bt_dataset
 
     def load_langpair_langid_dataset(self, data_path, lang_pairs, is_bt=False):
         src_datasets, tgt_datasets = [], []
