@@ -102,9 +102,9 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
         parser.add_argument('--data-mono', metavar='DIR', default=None, help='path to mono data directory')
         parser.add_argument('--downsample-bt', action='store_true',
-                            help="downsample bt to match the length of bitext data")
+                            help="downsample bt to match the amount of bitext data in each epoch")
         parser.add_argument('--downsample-mono', action='store_true',
-                            help="downsample mono to match the length of bitext data")
+                            help="downsample mono to match the amount of parallel data in each epoch")
         
         # MLM
         parser.add_argument('--multitask-mlm', action='store_true',
@@ -114,9 +114,9 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         parser.add_argument('--mlm-masking-ratio', default=0.15, type=float,
                             help='masking ratio for MaskedLM')
         parser.add_argument('--mlm-masking-prob', default=0.8, type=float,
-                            help='masking ratio for MaskedLM')
+                            help='probability of replacing the masked token with special token <MASK>')
         parser.add_argument('--mlm-random-token-prob', default=0.1, type=float,
-                            help='masking ratio for MaskedLM')
+                            help='probability of replacing the masked token with a random token')
         parser.add_argument('--mlm-word-mask', action='store_true',
                             help='use word-level random masking for MaskedLM')
         parser.add_argument('--mlm-span-mask', action='store_true',
@@ -132,9 +132,9 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         parser.add_argument('--dae-max-shuffle-distance', default=3.0, type=float,
                             help='maximum shuffle distance for DAE')
         parser.add_argument('--dae-dropout-prob', default=0., type=float,
-                            help='token dropout probability for DAE')
+                            help='word dropout probability for DAE')
         parser.add_argument('--dae-blanking-prob', default=0., type=float,
-                            help='token blanking probability for DAE')
+                            help='word blanking probability for DAE')
         parser.add_argument('--dae-blanking-with-mask', action='store_true',
                             help='token blanking with <mask> token instead of <unk> for DAE')
         parser.add_argument('--dae-span-masking-ratio', default=0.35, type=float,
@@ -151,7 +151,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
                             help='sampling temperature for multi-languages')
         parser.add_argument('--language-upsample-max', action='store_true',
                             help='upsample to make the max-capacity language a full set '
-                                 '(default: upsample and downsample to maintain the same total corpus size)')
+                                 '(default: upsample and downsample to keep a fixed total corpus size)')
         parser.add_argument('--language-temperature-scheduler', default='static', type=str, 
                             help='sampling temperature scheduler [static, linear]')
         parser.add_argument('--min-language-sample-temperature', default=1.0, type=float, 
