@@ -1,16 +1,25 @@
 # Introduction 
 Multitask training for Multilingual Neural Machine Translation
 
-Supported features:
+#### Supported features:
 * Baseline: Multilingual NMT system 
 * Multitask objective: masked language model
 * Multitask objective: denoising auto-encoder
 * Data scheduling: dynamic temperature for data sampling
 * Task scheduling: dynamic multitask weights and noising ratio
 
-# Usage
+#### Table of Contents
 
-#### MultiNMT Baseline
+* [Usage](#usage): example training / test commands
+* [Data](#data): instructions on data construction and organization
+* [Tasks](#tasks): description of self-defined tasks
+* [Named Arguments](#named_args): full list of self-defined arguments
+* [Scripts](#scripts): example scripts for training, test and data construction
+* [Codes](#codes): list of files with major modifications
+
+# <a name="usage"> Usage </a>
+
+### MultiNMT Baseline
 
 Training (online sampling with T=5)
 ```
@@ -41,7 +50,7 @@ cat $FOUT | grep -P "^H" | cut -f 3- > $FOUT.out
 cat $FOUT.out | python $SACRE_BLEU/sacrebleu.py $FTGT 
 ```
 
-#### <a name="usage_mtl_multitask"> MultiNMT with MultiTask Training </a>
+### <a name="usage_mtl_multitask"> MultiNMT with MultiTask Training </a>
 Training (with BT, dynamic temperature, word-level MLM and span-level DAE)
 ```
 python $FS_DIR/train.py $DATA_DIR --save-dir $OUTPUT_DIR \
@@ -89,9 +98,9 @@ For X-X, change to:
 --lang-dae "en,fr,de,fi"
 ```
 
-# Data
+# <a name="data"> Data </a>
 
-#### Bitext Data
+### Bitext Data
 Bitext training data for all language pairs should be kept in ```$DATA_DIR```.
 
 Train a shared SPM model with full (or sampled) corpus of all language pairs:
@@ -147,7 +156,7 @@ train.fr-en.fr.idx
 ```
 The data can be directly used for training En-X and X-X system, by changing the --lang-pairs value to "en-fr,en-de" and "fr-en,de-en,en-fr,en-de" respectively.
 
-#### Back Translation
+### Back Translation
 
 Back translations are sampled with bilingual systems.
 
@@ -168,7 +177,7 @@ Note that during training, bitext data and BT data will be mixed and shuffled to
 So it can also be done by combining bitext and BT data during preprocessing. 
 The ```--data-bt``` flag is for convenience only. 
 
-#### Monolingual Data
+### Monolingual Data
 
 ```
 python $FS_DIR/preprocess.py \
@@ -195,9 +204,9 @@ train.en.bin
 train.en.idx
 ```
 
-# Tasks
+# <a name="tasks"> Tasks </a>
 
-#### translation_mtl
+### <a name="tasks_mtl"> translation_mtl </a>
 Task for multilingual translation, supports:
 * multilingual training (should do offline during preprocessing)
 * back translation
@@ -207,7 +216,7 @@ Supports all arguments in Named Arguments - [Multilingual Training](#args_mtl), 
 --task translation_mtl --lang-pairs "fr-en,de-en" --data-bt $BT_DATA_DIR --downsample-bt 
 ```
 
-#### translation_mtl_ols
+### <a name="tasks_mtl_ols"> translation_mtl_ols </a>
 task for multilingual translation with online data sampling, supports:
 * multilingual training 
 * online sampling
@@ -223,7 +232,7 @@ Supports all arguments in Named Arguments - [Multilingual Training](#args_mtl) a
 --language-temperature-scheduler "static" 
 ```
 
-#### translation_mtl_multitask_curr
+### <a name="tasks_mtl_multitask"> translation_mtl_multitask_curr </a>
 task for multilingual translation with multitask and curriculum learning, supports:
 
 * multilingual training 
@@ -237,10 +246,9 @@ Note: to use this task, model must be ```transformer_mlm```, e.g. ```--arch tran
 
 Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_multitask).
 
+# <a name="named_args"> Named Arguments </a>
 
-# Named Arguments
-
-#### <a name="args_mtl"> Multilingual Training </a>
+### <a name="args_mtl"> Multilingual Training </a>
 |                   |                |
 | ----------------- |:---------------| 
 | --lang-pairs      | list of multilingual language pairs (comma-separated) <br><br> e.g.: "en-de,en-fr,de-fr" |
@@ -249,7 +257,7 @@ Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_mul
 | --data-bt         | path to back translation data directory |
 | --downsample-bt   | downsample bt to match the amount of bitext data in each epoch <br><br> default: False, action='store_true' |
 
-#### Multitasking
+### Multitasking
 |                     |                |
 | -----------------   |:---------------| 
 | --data-mono         | path to mono data directory |
@@ -257,7 +265,7 @@ Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_mul
 | --bpe-cont-marker   | used to find word boundary for word-level noising <br><br> default: sentencepiece, choices=[sentencepiece, bpe, token] |
 | --static-noising    | use same noising for same example in each epoch <br><br> default: False |
 
-#### Masked Language Model
+### Masked Language Model
 |                     |                |
 | -----------------   |:---------------| 
 | --multitask-mlm     | use MaskedLM objective together with MT cross-entropy |
@@ -271,7 +279,7 @@ Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_mul
 | --mlm-activation-fn | activation function to use in MLM | 
 | --share-encoder     | share encoder for seq2seq and mlm task <br><br> default: True |
 
-#### Denoising Auto-Encoder
+### Denoising Auto-Encoder
 |                            |                |
 | -----------------          |:---------------| 
 | --multitask-dae            | use DAE objective together with MT cross-entropy |
@@ -283,7 +291,7 @@ Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_mul
 | --dae-span-masking-ratio   | span masking ratio for DAE <br><br> default: 0.35 |
 | --dae-span-lambda          | lambda of poisson distribution for span length sampling <br><br> default: 3.5 |
 
-#### <a name="args_data_curr"> Data Scheduling </a> 
+### <a name="args_data_curr"> Data Scheduling </a> 
 |                                   |                |
 | -----------------                 |:---------------| 
 | --language-sample-temperature     | sampling temperature for multi-languages <br><br> default: 1.0 |
@@ -301,7 +309,7 @@ T(k) = (T - T_0) / N + T_0
 * T_0:  --min-language-sample-temperature
 * N:    --language-sample-warmup-epochs
 
-#### Multitask Weight Scheduling
+### Multitask Weight Scheduling
 |                       |                |
 | -----------------     |:---------------| 
 | --multitask-scheduler | multitask weight scheduler <br><br> default=static, choices=[static, linear] |
@@ -318,7 +326,7 @@ W(k) = W - (W - W_0) / N
 * W_0: alpha-min
 * N:   alpha-warmup
 
-#### Noising Ratio Scheduling
+### Noising Ratio Scheduling
 |                                    |                |
 | -----------------                  |:---------------| 
 | --mlm-masking-ratio-min            | minimal (starting) masking ratio for MaskedLM <br><br> default: 0.15 |
@@ -327,3 +335,49 @@ W(k) = W - (W - W_0) / N
 | --dae-span-masking-ratio-min       | minimal (starting) span masking ratio for DAE <br><br> default: 0.35 |
 | --dae-span-masking-ratio-warmup-epochs | warmup epochs for span masking ratio scheduler <br><br> default: 1 |
 | --dae-span-masking-ratio-scheduler | DAE span masking ratio scheduler <br><br> default: static, choices=[static, linear] |
+
+# <a name="scripts"> Scripts </a>
+|                           |                |
+| -----------------         |:---------------| 
+| train.sh                  | training script |
+| test.sh                   | testing script |
+| train_xxen_multitask.yaml | config file for X-EN system with multitask training, dynamic temperature sampling and BT |
+| test_xxen_multitask.yaml  | config file for testing on all pairs of the above system |
+| data/data_gen.sh          | build binarized bitext data |
+| data/data_gen_mono.sh     | build binarized monolingual and BT data |
+| data/filter_bitext.py     | rule-based filtering for parallel data |
+| data/filter_mono.py       | rule based filtering for monolingual data |
+| data/sample_offline_up.py | temperature based offline upsampling |
+
+# <a name="codes"> Codes </a>
+Description of files with new features or major modifications.
+
+### tasks
+|                        |                |
+| -----------------      |:---------------| 
+| translation_mtl.py     | task for multilingual translation <br> see [translation_mtl](#tasks_mtl) |
+| translation_mtl_ols.py | task for multilingual translation with online sample <br> see [translation_mtl_ols](#tasks_mtl_ols) |
+| translation_mtl_multitask_curr.py | task for multilingual translation with multitask learning <br> see [translation_mtl_multitask_curr](#tasks_mtl_multitask) |
+
+### models
+|                        |                |
+| -----------------      |:---------------| 
+| transformer_mlm.py     | transformer with language model head on encoder side |
+
+### criterions
+|                        |                |
+| -----------------      |:---------------| 
+| mlm_loss.py            | loss for masked language model <br> only compute loss for masked positions |
+
+### data
+|                            |                |
+| -----------------          |:---------------| 
+| langpair_dataset_loader.py | data loader for multilingual bitext, bt and monolingual data |
+| language_pair_langid_dataset.py | dataset wrapper for language pairs with language id appended |
+| masking.py                 | masking schemes for MLM and DAE <br> * RandomTokenMasking: token-level masking for MLM; <br> * RandomWordMasking: word-level masking for MLM; <br> * SpanTokenMasking: span masking for MLM; <br> * TextInfilling: span mask for DAE (BART-style); <br>
+| masking_dataset.py         | dataset wrapper for MLM |
+| noising.py                 | add support for sentencepiece | 
+| noising_dataset.py         | dataset wrapper for DAE |
+| dictionary.py              | add special_symbol_index, needed for determining word boundary with sentencepiece |
+| resampling_dataset.py      | do randomly sampling at each epoch |
+| concat_dataset.py          | add epoch update and support updating sample ratios |
