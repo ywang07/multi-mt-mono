@@ -73,7 +73,7 @@ class LangpairDatasetLoader(object):
         language_sample_temperature=1.0, 
         bt_data_path=None, 
         is_train=True,
-        downsample_bt=False,
+        downsample_bt_ratio=-1,
     ):
         self.data_path = data_path
         self.split = split
@@ -96,7 +96,7 @@ class LangpairDatasetLoader(object):
         self.language_sample_temperature = language_sample_temperature
         self.bt_data_path = bt_data_path
         self.is_train = is_train
-        self.downsample_bt = downsample_bt
+        self.downsample_bt_ratio = downsample_bt_ratio
 
     def load_all_langpair_dataset(self):
         # load bt corpus (skip dev)
@@ -144,8 +144,8 @@ class LangpairDatasetLoader(object):
 
     def load_bt_dataset(self, bt_dataset, bitext_lengths=None):
         # downsample to match #bitext
-        if self.downsample_bt:
-            size_ratio = min(bitext_lengths / float(len(bt_dataset)), 1.0)
+        if self.downsample_bt_ratio > 0:
+            size_ratio = min(self.downsample_bt_ratio * bitext_lengths / float(len(bt_dataset)), 1.0)
             print("| [resample]  downsampling BT with ratio: {}".format(size_ratio))
             bt_dataset = ResamplingDataset(
                 dataset=bt_dataset,
@@ -359,7 +359,7 @@ class MonoDatasetLoader(object):
             static_noising=self.static_noising,
             token_range=self.token_range
         )
-        if self.max_dataset_length > 0:
+        if 0 < self.max_dataset_length < len(mlm_dataset):
             size_ratio = min(float(self.max_dataset_length) / len(mlm_dataset), 1.)
             print("|  [resample] downsample MLM-mono data with ratio: {}".format(size_ratio))
             mlm_dataset = ResamplingDataset(
@@ -441,7 +441,7 @@ class MonoDatasetLoader(object):
             static_noising=self.static_noising
         )
 
-        if self.max_dataset_length > 0:
+        if 0 < self.max_dataset_length < len(dae_dataset):
             size_ratio = min(float(self.max_dataset_length) / len(dae_dataset), 1.)
             print("|  [resample] downsample DAE-mono data with ratio: {}".format(size_ratio))
             dae_dataset = ResamplingDataset(

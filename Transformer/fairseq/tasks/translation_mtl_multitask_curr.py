@@ -101,10 +101,10 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         # BT / mono data
         parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
         parser.add_argument('--data-mono', metavar='DIR', default=None, help='path to mono data directory')
-        parser.add_argument('--downsample-bt', action='store_true',
-                            help="downsample bt to match the amount of bitext data in each epoch")
-        parser.add_argument('--downsample-mono', action='store_true',
-                            help="downsample mono to match the amount of parallel data in each epoch")
+        parser.add_argument('--downsample-bt-ratio', default=-1, type=float,
+                            help="downsample bt to have #bitext : #bt = 1 : ratio in each epoch")
+        parser.add_argument('--downsample-mono-ratio', default=-1, type=float,
+                            help="downsample mono to have #parallel : #mono = 1 : ratio in each epoch")
         
         # MLM
         parser.add_argument('--multitask-mlm', action='store_true',
@@ -184,6 +184,20 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
         parser.add_argument('--dae-span-masking-ratio-scheduler', default='static', type=str, 
                             help='DAE span masking ratio scheduler [static, linear]')
 
+        parser.add_argument('--dae-dropout-prob-min', default=0., type=float,
+                            help='minimal (starting) dropout prob for DAE')
+        parser.add_argument('--dae-dropout-prob-warmup-epochs', default=1, type=int,
+                            help='warmup epochs for dropout prob scheduler')
+        parser.add_argument('--dae-dropout-prob-scheduler', default='static', type=str, 
+                            help='DAE dropout prob scheduler [static, linear]')
+
+        parser.add_argument('--dae-blanking-prob-min', default=0., type=float,
+                            help='minimal (starting) blanking prob for DAE')
+        parser.add_argument('--dae-blanking-prob-warmup-epochs', default=1, type=int,
+                            help='warmup epochs for blanking prob scheduler')
+        parser.add_argument('--dae-blanking-prob-scheduler', default='static', type=str, 
+                            help='DAE blanking prob scheduler [static, linear]')
+
     def __init__(self, args, src_dict, tgt_dict, training, src_token_range=None, tgt_token_range=None):
         super().__init__(args)
         self.src_dict = src_dict
@@ -213,8 +227,8 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
 
         self.update_iterator = (self.args.language_sample_temperature != 1. \
             or self.args.language_temperature_scheduler != "static" \
-            or self.args.downsample_bt \
-            or self.args.downsample_mono
+            or self.args.downsample_bt_ratio > 0 \
+            or self.args.downsample_mono_ratio > 0
             )
 
     @classmethod
@@ -425,7 +439,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             language_upsample_max=self.args.language_upsample_max,
             bt_data_path=bt_data_path,
             is_train=is_train,
-            downsample_bt=self.args.downsample_bt
+            downsample_bt_ratio=self.args.downsample_bt_ratio
         ) 
      
         dataset_mt, data_lengths, bt_lengths = dataset_loader.load_all_langpair_dataset()
@@ -448,7 +462,7 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
                 max_source_positions=self.args.max_source_positions,
                 max_target_positions=self.args.max_target_positions,
                 static_noising=self.args.static_noising,
-                max_dataset_length=len(dataset_mt) if self.args.downsample_mono else -1,
+                max_dataset_length=self.args.downsample_mono_ratio * len(dataset_mt) if self.args.downsample_mono_ratio > 0 else -1,
             )
             noising_ratios = self.set_noising_ratio(epoch=0)
 
@@ -727,8 +741,8 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             epoch <= self.args.language_sample_warmup_epochs:
             # update epoch and size ratios
             size_ratios = self.get_resampling_size_ratio(epoch)
-            if self.args.downsample_bt:
-                bt_ratio = min(sum(self.data_lengths) / float(self.data_bt_lengths), 1.0)
+            if self.args.downsample_bt_ratio > 0:
+                bt_ratio = min(self.args.downsample_bt_ratio * sum(self.data_lengths) / float(self.data_bt_lengths), 1.0)
                 print("| [resample] epoch {:03d}, downsampling ratio for bt: {}".format(epoch, bt_ratio))
                 size_ratios = np.concatenate([size_ratios, np.array([bt_ratio])])
             dataset.set_epoch(epoch, size_ratios=size_ratios)
@@ -783,6 +797,20 @@ class TranslationMtlMultitaskCurrTask(FairseqTask):
             ratio_min=self.args.dae_span_masking_ratio_min,
             warmup_epochs=self.args.dae_span_masking_ratio_warmup_epochs,
             scheduler=self.args.dae_span_masking_ratio_scheduler,
+        )
+        ratios["word_dropout_prob"] = self.get_noising_ratio(
+            epoch=epoch,
+            ratio_max=self.args.dae_dropout_prob,
+            ratio_min=self.args.dae_dropout_prob_min,
+            warmup_epochs=self.args.dae_dropout_prob_warmup_epochs,
+            scheduler=self.args.dae_dropout_prob_scheduler,
+        )
+        ratios["word_blanking_prob"] = self.get_noising_ratio(
+            epoch=epoch,
+            ratio_max=self.args.dae_blanking_prob,
+            ratio_min=self.args.dae_blanking_prob_min,
+            warmup_epochs=self.args.dae_blanking_prob_warmup_epochs,
+            scheduler=self.args.dae_blanking_prob_scheduler,
         )
         return ratios
 

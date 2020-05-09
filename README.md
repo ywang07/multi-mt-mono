@@ -62,9 +62,9 @@ python $FS_DIR/train.py $DATA_DIR --save-dir $OUTPUT_DIR \
     --language-sample-warmup-epochs 5 \
     --language-temperature-scheduler "linear" \
     --data-bt $BT_DATA_DIR \
-    --downsample-bt \
+    --downsample-bt-ratio 1.0 \
     --data-mono $MONO_DATA_DIR \
-    --downsample-mono \
+    --downsample-mono-ratio 1.0 \
     --multitask-mlm \
     --lang-mlm fr,de,fi \
     --mlm-word-mask \
@@ -145,6 +145,7 @@ dict.src.txt
 dict.tgt.txt
 dict.fr.txt
 dict.de.txt
+dict.en.txt
 train.de-en.de.bin
 train.de-en.de.idx
 train.de-en.en.bin
@@ -154,7 +155,7 @@ train.fr-en.en.idx
 train.fr-en.fr.bin
 train.fr-en.fr.idx
 ```
-The data can be directly used for training En-X and X-X system, by changing the --lang-pairs value to "en-fr,en-de" and "fr-en,de-en,en-fr,en-de" respectively.
+The data can be directly used for training En-X and X-X system, by changing the ```--lang-pairs``` value to ```"en-fr,en-de"``` and ```"fr-en,de-en,en-fr,en-de"``` respectively.
 
 ### Back Translation
 
@@ -213,7 +214,7 @@ Task for multilingual translation, supports:
 
 Supports all arguments in Named Arguments - [Multilingual Training](#args_mtl), e.g. multilingual with back translation:
 ```
---task translation_mtl --lang-pairs "fr-en,de-en" --data-bt $BT_DATA_DIR --downsample-bt 
+--task translation_mtl --lang-pairs "fr-en,de-en" --data-bt $BT_DATA_DIR --downsample-bt-ratio 1.0
 ```
 
 ### <a name="tasks_mtl_ols"> translation_mtl_ols </a>
@@ -249,26 +250,26 @@ Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_mul
 # <a name="sec_named_args"> Named Arguments </a>
 
 ### <a name="args_mtl"> Multilingual Training </a>
-|                   |                |
-| ----------------- |:---------------| 
-| --lang-pairs      | list of multilingual language pairs (comma-separated) <br><br> e.g.: "en-de,en-fr,de-fr" |
-| --encoder-langtok | add EOS in source sentence with source or target language token <br><br> default: "tgt", choices=['src', 'tgt']|
-| --decoder-langtok | replace BOS in target sentence with target language token <br><br> default: False, action='store_true' |
-| --data-bt         | path to back translation data directory |
-| --downsample-bt   | downsample bt to match the amount of bitext data in each epoch <br><br> default: False, action='store_true' |
+|                       |                |
+| -----------------     |:---------------| 
+| --lang-pairs          | list of multilingual language pairs (comma-separated) <br><br> e.g.: "en-de,en-fr,de-fr" |
+| --encoder-langtok     | add EOS in source sentence with source or target language token <br><br> default: "tgt", choices=['src', 'tgt']|
+| --decoder-langtok     | replace BOS in target sentence with target language token <br><br> default: False, action='store_true' |
+| --data-bt             | path to back translation data directory |
+| --downsample-bt-ratio | downsample bt to have have #bitext : #bt = 1 : ratio in each epoch <br><br> default: -1, type: float |
 
 ### Multitasking
-|                     |                |
-| -----------------   |:---------------| 
-| --data-mono         | path to mono data directory |
-| --downsample-mono   | downsample mono to match the amount of parallel data in each epoch |
-| --bpe-cont-marker   | used to find word boundary for word-level noising <br><br> default: sentencepiece, choices=[sentencepiece, bpe, token] |
-| --static-noising    | use same noising for same example in each epoch <br><br> default: False |
+|                         |                |
+| -----------------       |:---------------| 
+| --data-mono             | path to mono data directory |
+| --downsample-mono-ratio | downsample mono to have #parallel : #mono = 1 : ratio in each epoch <br><br> default: -1, type: float |
+| --bpe-cont-marker       | used to find word boundary for word-level noising <br><br> default: sentencepiece, choices=[sentencepiece, bpe, token] |
+| --static-noising        | use same noising for same example in each epoch <br><br> default: False |
 
 ### Masked Language Model
 |                     |                |
 | -----------------   |:---------------| 
-| --multitask-mlm     | use MaskedLM objective together with MT cross-entropy |
+| --multitask-mlm     | use MaskedLM objective together with MT cross-entropy <br><br> default: False, action='store_true' |
 | --lang-mlm          | comma-separated list of monolingual languages for MLM <br><br> e.g.: "en,de,fr" |
 | --mlm-masking-ratio | masking ratio for MaskedLM <br><br> default: 0.15 |
 | --mlm-masking-prob  | probability of replacing the masked token with special token \<mask\> <br><br> default: 0.8 |
@@ -282,7 +283,7 @@ Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_mul
 ### Denoising Auto-Encoder
 |                            |                |
 | -----------------          |:---------------| 
-| --multitask-dae            | use DAE objective together with MT cross-entropy |
+| --multitask-dae            | use DAE objective together with MT cross-entropy <br><br> default: False, action='store_true' |
 | --lang-dae                 | comma-separated list of monolingual languages for DAE <br><br> e.g.: "en,de,fr" |
 | --dae-max-shuffle-distance | maximum shuffle distance for DAE <br><br> default: 3.0 |
 | --dae-dropout-prob         | word dropout probability for DAE  (word dropout) <br><br> default: 0.0 |
@@ -302,7 +303,7 @@ Example usage refer to [Usage - MultiNMT with MultiTask Training](#usage_mtl_mul
 
 For dynamic (linear) temperature:
 
-T(k) = (T - T_0) / N + T_0
+T(k) = (T - T_0) / N * k + T_0
 
 * k:    current epoch
 * T:    --language-sample-temperature
@@ -320,7 +321,7 @@ T(k) = (T - T_0) / N + T_0
 | --dae-alpha-min       | minimum weight for dae objective <br><br> default: 1.0 | 
 | --dae-alpha-warmup    | warmup epochs for dae objective <br><br> default: 1 |
 
-W(k) = W - (W - W_0) / N
+W(k) = W - (W - W_0) / N  * k
 * k:   current epoch
 * W:   alpha
 * W_0: alpha-min

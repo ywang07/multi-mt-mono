@@ -86,8 +86,8 @@ class TranslationMtlOlsTask(FairseqTask):
         
         # BT
         parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
-        parser.add_argument('--downsample-bt', action='store_true',
-                            help="downsample bt to match the length of bitext data")
+        parser.add_argument('--downsample-bt-ratio', default=-1, type=float,
+                            help="downsample bt to have #bitext : #bt = 1 : ratio in each epoch")
 
         # online sampling
         parser.add_argument('--language-sample-temperature', default=1.0, type=float, 
@@ -132,7 +132,7 @@ class TranslationMtlOlsTask(FairseqTask):
 
         self.update_iterator = (self.args.language_sample_temperature != 1. \
             or self.args.language_temperature_scheduler != "static" \
-            or self.args.downsample_bt 
+            or self.args.downsample_bt_ratio > 0
         )
 
     @classmethod
@@ -304,7 +304,7 @@ class TranslationMtlOlsTask(FairseqTask):
             language_upsample_max=self.args.language_upsample_max,
             bt_data_path=bt_data_path,
             is_train=is_train,
-            downsample_bt=self.args.downsample_bt
+            downsample_bt_ratio=self.args.downsample_bt_ratio
         )
         self.datasets[split], data_lengths, bt_lengths = dataset_loader.load_all_langpair_dataset()
         self.data_lengths = data_lengths if is_train else self.data_lengths
@@ -406,7 +406,7 @@ class TranslationMtlOlsTask(FairseqTask):
             epoch <= self.args.language_sample_warmup_epochs:
             # update epoch and size ratios
             size_ratios = self.get_resampling_size_ratio(epoch)
-            if self.args.language_upsample_max and self.args.downsample_bt:
+            if self.args.language_upsample_max and self.args.downsample_bt_ratio > 0:
                 bt_ratio = min(sum(self.data_lengths) / float(self.data_bt_lengths), 1.0)
                 print("[resample] epoch {:03d}, downsampling ratio for bt: {}".format(epoch, bt_ratio))
                 size_ratios = np.concatenate([size_ratios, np.array([bt_ratio])])

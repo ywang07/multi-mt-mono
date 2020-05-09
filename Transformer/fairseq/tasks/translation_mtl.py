@@ -79,8 +79,8 @@ class TranslationMtlTask(FairseqTask):
     
         # BT
         parser.add_argument('--data-bt', metavar='DIR', default=None, help='path to back translation data directory')
-        parser.add_argument('--downsample-bt', action='store_true',
-                            help="downsample bt to match the length of bitext data")
+        parser.add_argument('--downsample-bt-ratio', default=-1, type=float,
+                            help="downsample bt to have #bitext : #bt = 1 : ratio in each epoch")
 
     def __init__(self, args, src_dict, tgt_dict, training):
         super().__init__(args)
@@ -252,7 +252,7 @@ class TranslationMtlTask(FairseqTask):
             resample=False,
             bt_data_path=bt_data_path,
             is_train=is_train,
-            downsample_bt=self.args.downsample_bt
+            downsample_bt_ratio=self.args.downsample_bt_ratio
         )
         self.datasets[split], _, bt_lengths = dataset_loader.load_all_langpair_dataset()
         self.data_bt_lengths = bt_lengths if is_train else self.data_bt_lengths
